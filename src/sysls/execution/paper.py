@@ -20,12 +20,11 @@ from pydantic import BaseModel
 
 from sysls.core.events import FillEvent, OrderAccepted, OrderCancelled
 from sysls.core.exceptions import OrderError
-from sysls.core.types import Instrument, OrderStatus, OrderType, Side
+from sysls.core.types import Instrument, OrderRequest, OrderStatus, OrderType, Side
 from sysls.execution.venues.base import VenueAdapter
 
 if TYPE_CHECKING:
     from sysls.core.bus import EventBus
-    from sysls.core.types import OrderRequest
 
 
 class _PaperOrder(BaseModel):
