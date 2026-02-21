@@ -12,7 +12,12 @@ dependencies = [
     "pyyaml>=6.0",
     "structlog>=24.4",
     "msgpack>=1.1",
+    # Phase 1 — Data layer
+    "polygon-api-client>=1.14",
 ]
+
+[project.optional-dependencies]
+arctic = ["arcticdb>=6.0"]
 
 [dependency-groups]
 dev = [
