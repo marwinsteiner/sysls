@@ -1,0 +1,29 @@
+#!/bin/sh
+# sysls pre-commit hook
+# Enforces: ruff check, ruff format --check, pytest
+# Install: copy to .git/hooks/pre-commit (or run scripts/install-hooks)
+
+set -e
+
+echo "🔍 Pre-commit: Running ruff check..."
+uv run ruff check src/ tests/ 2>/dev/null || {
+    echo "❌ ruff check failed. Fix lint errors before committing."
+    exit 1
+}
+
+echo "🔍 Pre-commit: Running ruff format --check..."
+uv run ruff format --check src/ tests/ 2>/dev/null || {
+    echo "❌ ruff format failed. Run 'uv run ruff format src/ tests/' before committing."
+    exit 1
+}
+
+# Only run pytest if test files exist
+if find tests/ -name "test_*.py" -o -name "*_test.py" 2>/dev/null | grep -q .; then
+    echo "🧪 Pre-commit: Running pytest..."
+    uv run pytest tests/ -x -q --tb=short 2>/dev/null || {
+        echo "❌ Tests failed. Fix failing tests before committing."
+        exit 1
+    }
+fi
+
+echo "✅ Pre-commit checks passed."
