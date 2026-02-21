@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 arctic = ["arcticdb>=6.0"]
+ccxt = ["ccxt>=4.0"]
 
 [dependency-groups]
 dev = [
@@ -27,6 +28,7 @@ dev = [
     "hypothesis>=6.115",
     "ruff>=0.8",
     "mypy>=1.13",
+    "ccxt>=4.0",
 ]
 
 [build-system]
