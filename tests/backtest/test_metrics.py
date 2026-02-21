@@ -27,6 +27,7 @@ from sysls.backtest.metrics import (
     total_return,
     win_rate,
 )
+from sysls.core.types import Side
 
 # ---------------------------------------------------------------------------
 # TradeRecord model tests
@@ -40,7 +41,7 @@ class TestTradeRecord:
         """TradeRecord can be constructed with all required fields."""
         trade = TradeRecord(
             instrument="AAPL",
-            side="BUY",
+            side=Side.BUY,
             entry_price=150.0,
             exit_price=155.0,
             quantity=10.0,
@@ -56,7 +57,7 @@ class TestTradeRecord:
         """TradeRecord is immutable."""
         trade = TradeRecord(
             instrument="AAPL",
-            side="BUY",
+            side=Side.BUY,
             entry_price=150.0,
             exit_price=155.0,
             quantity=10.0,
@@ -123,7 +124,7 @@ class TestBacktestResult:
         """BacktestResult stores a list of TradeRecord objects."""
         trade = TradeRecord(
             instrument="SPY",
-            side="BUY",
+            side=Side.BUY,
             entry_price=400.0,
             exit_price=410.0,
             quantity=5.0,
@@ -428,6 +429,13 @@ class TestAnnualizedReturn:
         result = annualized_return(rets, periods_per_year=252)
         assert result == pytest.approx(expected, rel=1e-8)
 
+    def test_total_loss(self) -> None:
+        """Returns exceeding -100% produce annualized return of -1.0."""
+        # Leveraged loss: cumulative product of (1 + r) <= 0
+        rets = np.array([-1.5])  # Single period with -150% return
+        result = annualized_return(rets, periods_per_year=252)
+        assert result == -1.0
+
 
 # ---------------------------------------------------------------------------
 # annualized_volatility tests
@@ -535,9 +543,9 @@ class TestProfitFactor:
         assert profit_factor(pnl) == pytest.approx(300.0 / 75.0)
 
     def test_no_losses(self) -> None:
-        """No losses returns 0.0 (edge case, not infinity)."""
+        """All winners with no losses returns infinity."""
         pnl = np.array([10.0, 20.0, 30.0])
-        assert profit_factor(pnl) == 0.0
+        assert profit_factor(pnl) == float("inf")
 
     def test_no_wins(self) -> None:
         """No wins returns 0.0."""
@@ -563,7 +571,7 @@ class TestSummarizeBacktest:
         trades = [
             TradeRecord(
                 instrument="SPY",
-                side="BUY",
+                side=Side.BUY,
                 entry_price=400.0,
                 exit_price=410.0,
                 quantity=5.0,
@@ -590,6 +598,15 @@ class TestSummarizeBacktest:
         assert result.total_trades == 0
         assert result.win_rate == 0.0
         assert result.profit_factor == 0.0
+
+    def test_empty_equity_curve(self) -> None:
+        """Summarize handles an empty equity curve gracefully."""
+        equity = np.array([])
+        result = summarize_backtest(equity, [], initial_capital=100_000.0)
+        assert result.total_trades == 0
+        assert result.total_return == 0.0
+        assert result.max_drawdown == 0.0
+        assert result.final_equity == 100_000.0
 
     def test_serialization_round_trip(self) -> None:
         """BacktestResult can be serialized to JSON and back."""

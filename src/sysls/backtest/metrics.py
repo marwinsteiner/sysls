@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     import numpy as np
@@ -48,7 +48,7 @@ class TradeRecord(BaseModel, frozen=True):
     """
 
     instrument: str
-    side: str  # "BUY" or "SELL"
+    side: str
     entry_price: float
     exit_price: float
     quantity: float
@@ -75,11 +75,13 @@ class BacktestResult(BaseModel, frozen=True):
         annualized_return: Geometric annualized return.
         annualized_volatility: Annualized return volatility.
         win_rate: Fraction of trades with positive PnL.
-        profit_factor: Gross profit divided by gross loss.
+        profit_factor: Gross profit divided by gross loss (``inf`` if no losses).
         total_trades: Number of completed round-trip trades.
         initial_capital: Starting capital.
         final_equity: Ending equity value.
     """
+
+    model_config = ConfigDict(ser_json_inf_nan="constants")
 
     equity_curve: list[float]
     returns: list[float]
@@ -187,8 +189,10 @@ def sortino_ratio(
 ) -> float:
     """Compute the annualized Sortino ratio.
 
-    Uses downside deviation (standard deviation of negative excess
-    returns) instead of total volatility.
+    Uses downside deviation (root-mean-square of negative excess
+    returns) instead of total volatility. This uses the population-
+    based downside deviation (no Bessel correction), which is the
+    standard convention for Sortino ratios.
 
     Args:
         returns: 1-D array of period returns.
@@ -388,8 +392,9 @@ def profit_factor(pnl_per_trade: np.ndarray) -> float:
         pnl_per_trade: 1-D array of PnL values per trade.
 
     Returns:
-        Profit factor. Returns ``0.0`` if there are no losing trades
-        or the array is empty.
+        Profit factor. Returns ``float('inf')`` when there are winning
+        trades but no losing trades. Returns ``0.0`` for empty arrays
+        or arrays with no winning trades.
     """
     import numpy as np
 
@@ -399,13 +404,31 @@ def profit_factor(pnl_per_trade: np.ndarray) -> float:
     gross_profit = float(np.sum(pnl[pnl > 0.0]))
     gross_loss = float(np.abs(np.sum(pnl[pnl < 0.0])))
     if gross_loss == 0.0:
-        return 0.0
+        return float("inf") if gross_profit > 0.0 else 0.0
     return gross_profit / gross_loss
 
 
 # ---------------------------------------------------------------------------
 # Convenience: build BacktestResult from arrays
 # ---------------------------------------------------------------------------
+
+
+def _safe_float(value: float, default: float = 0.0) -> float:
+    """Sanitize a float value for JSON-safe storage.
+
+    Replaces ``NaN`` and ``Inf`` with a finite default, since JSON
+    cannot represent these values natively.
+
+    Args:
+        value: The float value to sanitize.
+        default: Replacement for non-finite values.
+
+    Returns:
+        The original value if finite, otherwise *default*.
+    """
+    import math
+
+    return value if math.isfinite(value) else default
 
 
 def summarize_backtest(
@@ -443,15 +466,19 @@ def summarize_backtest(
         equity_curve=equity_arr.tolist(),
         returns=rets.tolist(),
         trades=trades,
-        total_return=total_return(equity_arr),
-        sharpe_ratio=sharpe_ratio(rets, periods_per_year=periods_per_year),
-        sortino_ratio=sortino_ratio(rets, periods_per_year=periods_per_year),
-        max_drawdown=max_drawdown(equity_arr),
-        calmar_ratio=calmar_ratio(rets, equity_arr, periods_per_year=periods_per_year),
-        annualized_return=annualized_return(rets, periods_per_year=periods_per_year),
-        annualized_volatility=annualized_volatility(rets, periods_per_year=periods_per_year),
-        win_rate=win_rate(pnl_arr),
-        profit_factor=profit_factor(pnl_arr),
+        total_return=_safe_float(total_return(equity_arr)),
+        sharpe_ratio=_safe_float(sharpe_ratio(rets, periods_per_year=periods_per_year)),
+        sortino_ratio=_safe_float(sortino_ratio(rets, periods_per_year=periods_per_year)),
+        max_drawdown=_safe_float(max_drawdown(equity_arr)),
+        calmar_ratio=_safe_float(
+            calmar_ratio(rets, equity_arr, periods_per_year=periods_per_year)
+        ),
+        annualized_return=_safe_float(annualized_return(rets, periods_per_year=periods_per_year)),
+        annualized_volatility=_safe_float(
+            annualized_volatility(rets, periods_per_year=periods_per_year)
+        ),
+        win_rate=_safe_float(win_rate(pnl_arr)),
+        profit_factor=_safe_float(profit_factor(pnl_arr)),
         total_trades=len(trades),
         initial_capital=initial_capital,
         final_equity=float(equity_arr[-1]) if equity_arr.size > 0 else initial_capital,
