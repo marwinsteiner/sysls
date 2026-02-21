@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING
 import structlog
 from pydantic import BaseModel
 
+from sysls.core.types import Instrument  # noqa: TC001 — needed at runtime for Pydantic models
+
 if TYPE_CHECKING:
-    from sysls.core.types import Instrument
     from sysls.execution.oms import OrderManagementSystem
     from sysls.execution.venues.base import VenueAdapter
 
