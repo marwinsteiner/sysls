@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import StrEnum, unique
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -92,7 +92,7 @@ class DataConnector(ABC):
         disconnected.
         """
 
-    async def __aenter__(self) -> DataConnector:
+    async def __aenter__(self) -> Self:
         """Enter async context manager -- calls :meth:`connect`."""
         await self.connect()
         return self

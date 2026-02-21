@@ -149,6 +149,11 @@ def bars_to_events(
     Returns:
         One :class:`BarEvent` per row, ordered by timestamp.
 
+    Note:
+        ``bar_end_ns`` is set equal to ``bar_start_ns`` because the
+        timeframe is not known at this level.  Callers that need an
+        accurate bar end time should set it after construction.
+
     Raises:
         ValueError: If the DataFrame does not match the bar schema.
     """
