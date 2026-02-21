@@ -24,11 +24,10 @@ from sysls.core.events import (
     PositionEvent,
 )
 from sysls.core.exceptions import OrderError
-from sysls.core.types import OrderStatus, Side
+from sysls.core.types import Instrument, OrderRequest, OrderStatus, Side
 
 if TYPE_CHECKING:
     from sysls.core.bus import EventBus
-    from sysls.core.types import Instrument, OrderRequest
     from sysls.execution.venues.base import VenueAdapter
 
 
