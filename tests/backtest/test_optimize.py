@@ -441,9 +441,7 @@ class TestWalkForward:
         )
 
         # Total OOS equity points should equal sum of per-split equity lengths
-        total_oos_points = sum(
-            len(s.oos_result.equity_curve) for s in result.splits
-        )
+        total_oos_points = sum(len(s.oos_result.equity_curve) for s in result.splits)
         assert len(result.combined_oos_equity) == total_oos_points
 
     def test_combined_metrics_populated(self) -> None:
@@ -497,3 +495,136 @@ class TestWalkForward:
                 param_grid,
                 n_splits=0,
             )
+
+    def test_single_split_walk_forward(self) -> None:
+        """Walk-forward with a single split still works."""
+        from sysls.backtest.optimize import ParameterGrid, walk_forward
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"threshold": [0.0]})
+        result = walk_forward(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            n_splits=1,
+            train_ratio=0.7,
+        )
+        assert len(result.splits) == 1
+        assert result.splits[0].train_start == 0
+        assert result.splits[0].oos_end == 100
+
+
+# ---------------------------------------------------------------------------
+# Edge case tests
+# ---------------------------------------------------------------------------
+
+
+class TestEdgeCases:
+    """Edge case tests for the optimize module."""
+
+    def test_grid_search_with_multi_param(self) -> None:
+        """Grid search works with multiple parameters (MA crossover)."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"fast": [2, 3], "slow": [5, 10]})
+        result = grid_search(prices, _dual_param_signal, param_grid)
+
+        assert len(result.all_results) == 4
+        assert "fast" in result.best_params
+        assert "slow" in result.best_params
+
+    def test_grid_search_total_return_metric(self) -> None:
+        """Grid search can optimize on total_return metric."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005, 0.01]})
+        result = grid_search(prices, _simple_signal_func, param_grid, metric="total_return")
+
+        all_returns = [r.total_return for _, r in result.all_results]
+        # Sorted descending
+        for i in range(len(all_returns) - 1):
+            assert all_returns[i] >= all_returns[i + 1]
+
+    def test_grid_search_with_costs(self) -> None:
+        """Grid search passes commission and slippage through correctly."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.0]})
+
+        result_no_cost = grid_search(prices, _simple_signal_func, param_grid)
+        result_with_cost = grid_search(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            commission_rate=0.01,
+            slippage_rate=0.005,
+        )
+
+        # With costs, final equity should be lower
+        no_cost_equity = result_no_cost.all_results[0][1].final_equity
+        with_cost_equity = result_with_cost.all_results[0][1].final_equity
+        assert with_cost_equity < no_cost_equity
+
+    def test_parameter_grid_three_params(self) -> None:
+        """Grid with 3 parameters produces correct product."""
+        from sysls.backtest.optimize import ParameterGrid
+
+        grid = ParameterGrid({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+        assert len(grid) == 8
+        combos = list(grid)
+        assert len(combos) == 8
+        # Check one specific combo exists
+        assert {"a": 1, "b": 3, "c": 5} in combos
+
+    def test_time_series_split_invalid_train_ratio(self) -> None:
+        """Invalid train_ratio raises ValueError."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        with pytest.raises(ValueError, match="train_ratio"):
+            TimeSeriesSplit(n_samples=100, n_splits=3, train_ratio=0.0)
+        with pytest.raises(ValueError, match="train_ratio"):
+            TimeSeriesSplit(n_samples=100, n_splits=3, train_ratio=1.0)
+
+    def test_walk_forward_equity_continuity(self) -> None:
+        """Combined OOS equity is scaled so segments chain smoothly."""
+        from sysls.backtest.optimize import ParameterGrid, walk_forward
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"threshold": [0.0]})
+        result = walk_forward(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            n_splits=2,
+            train_ratio=0.7,
+        )
+
+        # First point should equal initial_capital
+        assert result.combined_oos_equity[0] == pytest.approx(100_000.0)
+
+        # At the boundary between splits, equity should be continuous
+        first_split_len = len(result.splits[0].oos_result.equity_curve)
+        if first_split_len < len(result.combined_oos_equity):
+            end_of_first = result.combined_oos_equity[first_split_len - 1]
+            start_of_second = result.combined_oos_equity[first_split_len]
+            # Should be approximately equal (scaled to chain)
+            assert start_of_second == pytest.approx(end_of_first, rel=0.01)
+
+    def test_walk_forward_combined_metrics_has_correct_length(self) -> None:
+        """Combined metrics equity curve matches combined_oos_equity."""
+        from sysls.backtest.optimize import ParameterGrid, walk_forward
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005]})
+        result = walk_forward(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            n_splits=3,
+            train_ratio=0.7,
+        )
+
+        assert len(result.combined_metrics.equity_curve) == len(result.combined_oos_equity)

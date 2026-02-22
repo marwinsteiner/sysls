@@ -197,8 +197,7 @@ def grid_search(
     # Validate metric name against BacktestResult fields.
     if metric not in BacktestResult.model_fields:
         raise ValueError(
-            f"Invalid metric {metric!r}. "
-            f"Must be one of: {sorted(BacktestResult.model_fields)}"
+            f"Invalid metric {metric!r}. Must be one of: {sorted(BacktestResult.model_fields)}"
         )
 
     prices_arr = np.asarray(prices, dtype=np.float64)
@@ -294,11 +293,7 @@ class TimeSeriesSplit:
             train_end = self._first_train_end + i * self._oos_step
             oos_start = train_end
             # Last split absorbs any remainder from integer division.
-            oos_end = (
-                self._n_samples
-                if i == self._n_splits - 1
-                else oos_start + self._oos_step
-            )
+            oos_end = self._n_samples if i == self._n_splits - 1 else oos_start + self._oos_step
             yield (train_start, train_end, oos_start, oos_end)
 
     def __len__(self) -> int:
@@ -397,9 +392,7 @@ def walk_forward(
             periods_per_year=periods_per_year,
         )
 
-        oos_equity_segments.append(
-            np.array(oos_result.equity_curve, dtype=np.float64)
-        )
+        oos_equity_segments.append(np.array(oos_result.equity_curve, dtype=np.float64))
 
         splits.append(
             WalkForwardSplit(
