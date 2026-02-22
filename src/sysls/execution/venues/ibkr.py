@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from sysls.core.exceptions import ConnectionError as SyslsConnectionError
 from sysls.core.exceptions import VenueError
 from sysls.core.types import (
     Instrument,
@@ -87,14 +88,45 @@ class IbkrAdapter(VenueAdapter):
             SyslsConnectionError: If ib_async is not installed or
                 connection to TWS/Gateway fails.
         """
-        raise NotImplementedError
+        try:
+            from ib_async import IB
+        except ImportError as exc:
+            raise SyslsConnectionError(
+                "ib_async is not installed. Install it with: pip install 'sysls[ibkr]'",
+                venue=self.name,
+            ) from exc
+
+        ib = IB()
+        try:
+            await ib.connectAsync(
+                self._host,
+                self._port,
+                clientId=self._client_id,
+                account=self._account or "",
+            )
+        except Exception as exc:
+            raise SyslsConnectionError(
+                f"Failed to connect to TWS/Gateway at {self._host}:{self._port}: {exc}",
+                venue=self.name,
+            ) from exc
+
+        self._ib = ib
+        self._logger.info(
+            "ibkr_connected",
+            host=self._host,
+            port=self._port,
+            client_id=self._client_id,
+        )
 
     async def disconnect(self) -> None:
         """Disconnect from TWS/Gateway.
 
         Safe to call multiple times.
         """
-        raise NotImplementedError
+        if self._ib is not None:
+            self._ib.disconnect()
+            self._ib = None
+            self._logger.info("ibkr_disconnected")
 
     # -- Properties --------------------------------------------------------
 
