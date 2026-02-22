@@ -27,6 +27,8 @@ Typical usage::
 
 from __future__ import annotations
 
+import itertools
+import math
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -67,15 +69,22 @@ class ParameterGrid:
     """
 
     def __init__(self, param_dict: dict[str, list[Any]]) -> None:
-        raise NotImplementedError
+        self._keys = list(param_dict.keys())
+        self._values = [list(v) for v in param_dict.values()]
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         """Yield each parameter combination as a dictionary."""
-        raise NotImplementedError
+        if not self._keys:
+            yield {}
+            return
+        for combo in itertools.product(*self._values):
+            yield dict(zip(self._keys, combo, strict=True))
 
     def __len__(self) -> int:
         """Return the total number of parameter combinations."""
-        raise NotImplementedError
+        if not self._keys:
+            return 1
+        return math.prod(len(v) for v in self._values)
 
 
 # ---------------------------------------------------------------------------

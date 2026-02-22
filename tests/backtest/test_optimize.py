@@ -59,21 +59,59 @@ class TestParameterGrid:
 
     def test_basic_grid(self) -> None:
         """Two-param grid produces correct Cartesian product."""
+        from sysls.backtest.optimize import ParameterGrid
+
+        grid = ParameterGrid({"fast": [2, 3], "slow": [5, 10]})
+        combos = list(grid)
+        assert len(combos) == 4
+        assert {"fast": 2, "slow": 5} in combos
+        assert {"fast": 2, "slow": 10} in combos
+        assert {"fast": 3, "slow": 5} in combos
+        assert {"fast": 3, "slow": 10} in combos
 
     def test_single_param(self) -> None:
         """Single-parameter grid yields one dict per value."""
+        from sysls.backtest.optimize import ParameterGrid
+
+        grid = ParameterGrid({"threshold": [0.01, 0.02, 0.03]})
+        combos = list(grid)
+        assert len(combos) == 3
+        assert combos[0] == {"threshold": 0.01}
+        assert combos[1] == {"threshold": 0.02}
+        assert combos[2] == {"threshold": 0.03}
 
     def test_empty_grid(self) -> None:
         """Grid with no parameters yields one empty dict."""
+        from sysls.backtest.optimize import ParameterGrid
+
+        grid = ParameterGrid({})
+        combos = list(grid)
+        assert combos == [{}]
 
     def test_single_value_per_param(self) -> None:
         """Grid with one value per param yields exactly one combo."""
+        from sysls.backtest.optimize import ParameterGrid
+
+        grid = ParameterGrid({"a": [1], "b": [2]})
+        combos = list(grid)
+        assert combos == [{"a": 1, "b": 2}]
 
     def test_length(self) -> None:
         """__len__ matches number of yielded combinations."""
+        from sysls.backtest.optimize import ParameterGrid
+
+        grid = ParameterGrid({"a": [1, 2, 3], "b": [4, 5]})
+        assert len(grid) == 6
+        assert len(grid) == len(list(grid))
 
     def test_iteration_multiple_times(self) -> None:
         """Grid can be iterated multiple times."""
+        from sysls.backtest.optimize import ParameterGrid
+
+        grid = ParameterGrid({"x": [1, 2]})
+        first = list(grid)
+        second = list(grid)
+        assert first == second
 
 
 # ---------------------------------------------------------------------------
