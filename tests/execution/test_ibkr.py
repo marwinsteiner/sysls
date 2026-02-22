@@ -905,3 +905,125 @@ async def test_get_balances_empty(event_bus: EventBus) -> None:
         balances = await adapter.get_balances()
 
     assert balances == {}
+
+
+# ---------------------------------------------------------------------------
+# Error wrapping tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wrap_ib_error_connection_error(event_bus: EventBus) -> None:
+    """ConnectionError should be wrapped as SyslsConnectionError."""
+    mock_ib = _make_mock_ib()
+    mock_ib.placeOrder.side_effect = ConnectionError("Lost connection")
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        with pytest.raises(SyslsConnectionError, match="Lost connection"):
+            await adapter.submit_order(_make_order())
+
+
+@pytest.mark.asyncio
+async def test_wrap_ib_error_os_error(event_bus: EventBus) -> None:
+    """OSError should be wrapped as SyslsConnectionError."""
+    mock_ib = _make_mock_ib()
+    mock_ib.placeOrder.side_effect = OSError("Network unreachable")
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        with pytest.raises(SyslsConnectionError, match="Network unreachable"):
+            await adapter.submit_order(_make_order())
+
+
+@pytest.mark.asyncio
+async def test_wrap_ib_error_timeout(event_bus: EventBus) -> None:
+    """TimeoutError should be wrapped as SyslsConnectionError."""
+    mock_ib = _make_mock_ib()
+    mock_ib.placeOrder.side_effect = TimeoutError("Request timed out")
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        with pytest.raises(SyslsConnectionError, match="Request timed out"):
+            await adapter.submit_order(_make_order())
+
+
+@pytest.mark.asyncio
+async def test_wrap_ib_error_value_error(event_bus: EventBus) -> None:
+    """ValueError should be wrapped as OrderError."""
+    mock_ib = _make_mock_ib()
+    mock_ib.placeOrder.side_effect = ValueError("Invalid quantity")
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        with pytest.raises(OrderError, match="Invalid quantity"):
+            await adapter.submit_order(_make_order())
+
+
+@pytest.mark.asyncio
+async def test_wrap_ib_error_generic(event_bus: EventBus) -> None:
+    """Other exceptions should be wrapped as VenueError."""
+    mock_ib = _make_mock_ib()
+    mock_ib.positions.side_effect = RuntimeError("Unexpected failure")
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        with pytest.raises(VenueError, match="Unexpected failure"):
+            await adapter.get_positions()
+
+
+@pytest.mark.asyncio
+async def test_get_balances_invalid_value_skipped(event_bus: EventBus) -> None:
+    """get_balances should skip account values that can't be parsed as Decimal."""
+    mock_ib = _make_mock_ib()
+    mock_ib.accountValues.return_value = [
+        _make_mock_account_value("CashBalance", "not_a_number", "USD"),
+        _make_mock_account_value("CashBalance", "25000.00", "EUR"),
+    ]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        balances = await adapter.get_balances()
+
+    assert "USD" not in balances
+    assert balances["EUR"] == Decimal("25000.00")
+
+
+@pytest.mark.asyncio
+async def test_get_positions_multiple_instruments(event_bus: EventBus) -> None:
+    """get_positions should handle multiple different instruments."""
+    mock_ib = _make_mock_ib()
+    mock_ib.positions.return_value = [
+        _make_mock_position(symbol="AAPL", sec_type="STK", position=100.0),
+        _make_mock_position(symbol="ES", sec_type="FUT", position=5.0),
+        _make_mock_position(symbol="SPY", sec_type="OPT", position=-10.0),
+    ]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        positions = await adapter.get_positions()
+
+    assert len(positions) == 3
+    symbols = {i.symbol for i in positions}
+    assert symbols == {"AAPL", "ES", "SPY"}
