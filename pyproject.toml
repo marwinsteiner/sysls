@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 arctic = ["arcticdb>=6.0"]
 ccxt = ["ccxt>=4.0"]
+ibkr = ["ib_async>=1.0"]
 
 [dependency-groups]
 dev = [
@@ -29,6 +30,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "ccxt>=4.0",
+    "ib_async>=1.0",
 ]
 
 [build-system]
