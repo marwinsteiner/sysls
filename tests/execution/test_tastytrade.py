@@ -808,3 +808,319 @@ class TestGetOrderStatus:
 
         with pytest.raises(VenueError, match="Not found"):
             await adapter.get_order_status("42", _make_equity_instrument())
+
+
+# ---------------------------------------------------------------------------
+# Mock helpers for positions and balances
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_position(
+    symbol: str = "AAPL",
+    instrument_type: str = "Equity",
+    quantity: str = "100",
+) -> MagicMock:
+    """Create a mock tastytrade CurrentPosition.
+
+    Args:
+        symbol: The position's symbol.
+        instrument_type: The instrument type string.
+        quantity: The position quantity.
+
+    Returns:
+        Mock CurrentPosition.
+    """
+    pos = MagicMock()
+    pos.symbol = symbol
+    pos.quantity = quantity
+    pos.instrument_type.value = instrument_type
+    return pos
+
+
+def _make_mock_balance(
+    cash_balance: str = "50000.00",
+    net_liquidating_value: str = "75000.00",
+    equity_buying_power: str = "30000.00",
+    derivative_buying_power: str | None = None,
+    day_trading_buying_power: str | None = None,
+    maintenance_excess: str | None = None,
+) -> MagicMock:
+    """Create a mock tastytrade AccountBalance."""
+    balance = MagicMock()
+    balance.cash_balance = cash_balance
+    balance.net_liquidating_value = net_liquidating_value
+    balance.equity_buying_power = equity_buying_power
+    balance.derivative_buying_power = derivative_buying_power
+    balance.day_trading_buying_power = day_trading_buying_power
+    balance.maintenance_excess = maintenance_excess
+    return balance
+
+
+# ---------------------------------------------------------------------------
+# Get positions tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetPositions:
+    """Test position querying."""
+
+    @pytest.mark.asyncio
+    async def test_get_positions_single_equity(self, event_bus: EventBus) -> None:
+        """get_positions should return one equity position."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.return_value = [
+            _make_mock_position(symbol="AAPL", instrument_type="Equity", quantity="100"),
+        ]
+
+        positions = await adapter.get_positions()
+
+        assert len(positions) == 1
+        instrument = next(iter(positions.keys()))
+        assert instrument.symbol == "AAPL"
+        assert instrument.asset_class == AssetClass.EQUITY
+        assert instrument.venue == Venue.TASTYTRADE
+        assert positions[instrument] == Decimal("100")
+
+    @pytest.mark.asyncio
+    async def test_get_positions_multiple(self, event_bus: EventBus) -> None:
+        """get_positions should return multiple positions."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.return_value = [
+            _make_mock_position(symbol="AAPL", quantity="100"),
+            _make_mock_position(
+                symbol="AAPL 240315C150", instrument_type="Equity Option", quantity="-5"
+            ),
+            _make_mock_position(symbol="ESH5", instrument_type="Future", quantity="2"),
+        ]
+
+        positions = await adapter.get_positions()
+
+        assert len(positions) == 3
+        symbols = {i.symbol for i in positions}
+        assert symbols == {"AAPL", "AAPL 240315C150", "ESH5"}
+
+    @pytest.mark.asyncio
+    async def test_get_positions_skips_zero_quantity(self, event_bus: EventBus) -> None:
+        """get_positions should skip positions with zero quantity."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.return_value = [
+            _make_mock_position(symbol="AAPL", quantity="0"),
+            _make_mock_position(symbol="MSFT", quantity="200"),
+        ]
+
+        positions = await adapter.get_positions()
+
+        assert len(positions) == 1
+        instrument = next(iter(positions.keys()))
+        assert instrument.symbol == "MSFT"
+
+    @pytest.mark.asyncio
+    async def test_get_positions_short(self, event_bus: EventBus) -> None:
+        """get_positions should return negative quantity for short positions."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.return_value = [
+            _make_mock_position(symbol="TSLA", quantity="-50"),
+        ]
+
+        positions = await adapter.get_positions()
+
+        assert len(positions) == 1
+        qty = next(iter(positions.values()))
+        assert qty == Decimal("-50")
+
+    @pytest.mark.asyncio
+    async def test_get_positions_empty(self, event_bus: EventBus) -> None:
+        """get_positions should return empty dict when no positions."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.return_value = []
+
+        positions = await adapter.get_positions()
+
+        assert positions == {}
+
+    @pytest.mark.asyncio
+    async def test_get_positions_option_asset_class(self, event_bus: EventBus) -> None:
+        """get_positions should map 'Equity Option' to OPTION asset class."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.return_value = [
+            _make_mock_position(
+                symbol="SPY 240621P500",
+                instrument_type="Equity Option",
+                quantity="10",
+            ),
+        ]
+
+        positions = await adapter.get_positions()
+
+        instrument = next(iter(positions.keys()))
+        assert instrument.asset_class == AssetClass.OPTION
+
+    @pytest.mark.asyncio
+    async def test_get_positions_not_connected_raises(
+        self, event_bus: EventBus
+    ) -> None:
+        """get_positions should raise VenueError when not connected."""
+        adapter = TastytradeAdapter(
+            bus=event_bus, login="user", password="pass"
+        )
+        with pytest.raises(VenueError, match="Not connected"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_get_positions_api_error(self, event_bus: EventBus) -> None:
+        """get_positions should wrap API errors via _wrap_tt_error."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = RuntimeError("API error")
+
+        with pytest.raises(VenueError, match="API error"):
+            await adapter.get_positions()
+
+
+# ---------------------------------------------------------------------------
+# Get balances tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetBalances:
+    """Test balance querying."""
+
+    @pytest.mark.asyncio
+    async def test_get_balances(self, event_bus: EventBus) -> None:
+        """get_balances should return balance fields as Decimal values."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_balances.return_value = _make_mock_balance(
+            cash_balance="50000.00",
+            net_liquidating_value="75000.00",
+            equity_buying_power="30000.00",
+        )
+
+        balances = await adapter.get_balances()
+
+        assert balances["cash_balance"] == Decimal("50000.00")
+        assert balances["net_liquidating_value"] == Decimal("75000.00")
+        assert balances["equity_buying_power"] == Decimal("30000.00")
+
+    @pytest.mark.asyncio
+    async def test_get_balances_skips_none(self, event_bus: EventBus) -> None:
+        """get_balances should skip fields that are None."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_balances.return_value = _make_mock_balance(
+            cash_balance="50000.00",
+            derivative_buying_power=None,
+        )
+
+        balances = await adapter.get_balances()
+
+        assert "cash_balance" in balances
+        assert "derivative_buying_power" not in balances
+
+    @pytest.mark.asyncio
+    async def test_get_balances_skips_zero(self, event_bus: EventBus) -> None:
+        """get_balances should skip zero balances."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_balances.return_value = _make_mock_balance(
+            cash_balance="0",
+            net_liquidating_value="75000.00",
+        )
+
+        balances = await adapter.get_balances()
+
+        assert "cash_balance" not in balances
+        assert balances["net_liquidating_value"] == Decimal("75000.00")
+
+    @pytest.mark.asyncio
+    async def test_get_balances_includes_all_fields(self, event_bus: EventBus) -> None:
+        """get_balances should include all non-None, non-zero fields."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_balances.return_value = _make_mock_balance(
+            cash_balance="50000.00",
+            net_liquidating_value="75000.00",
+            equity_buying_power="30000.00",
+            derivative_buying_power="25000.00",
+            day_trading_buying_power="100000.00",
+            maintenance_excess="20000.00",
+        )
+
+        balances = await adapter.get_balances()
+
+        assert len(balances) == 6
+        assert balances["maintenance_excess"] == Decimal("20000.00")
+
+    @pytest.mark.asyncio
+    async def test_get_balances_not_connected_raises(
+        self, event_bus: EventBus
+    ) -> None:
+        """get_balances should raise VenueError when not connected."""
+        adapter = TastytradeAdapter(
+            bus=event_bus, login="user", password="pass"
+        )
+        with pytest.raises(VenueError, match="Not connected"):
+            await adapter.get_balances()
+
+    @pytest.mark.asyncio
+    async def test_get_balances_api_error(self, event_bus: EventBus) -> None:
+        """get_balances should wrap API errors via _wrap_tt_error."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_balances.side_effect = RuntimeError("API error")
+
+        with pytest.raises(VenueError, match="API error"):
+            await adapter.get_balances()
+
+
+# ---------------------------------------------------------------------------
+# Instrument building tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildInstrument:
+    """Test _build_instrument_from_position helper."""
+
+    def test_equity(self) -> None:
+        """Equity position should produce EQUITY instrument."""
+        from sysls.execution.venues.tastytrade import _build_instrument_from_position
+
+        pos = _make_mock_position(symbol="NVDA", instrument_type="Equity")
+        instrument = _build_instrument_from_position(pos)
+
+        assert instrument.symbol == "NVDA"
+        assert instrument.asset_class == AssetClass.EQUITY
+        assert instrument.venue == Venue.TASTYTRADE
+        assert instrument.currency == "USD"
+
+    def test_equity_option(self) -> None:
+        """Equity Option position should produce OPTION instrument."""
+        from sysls.execution.venues.tastytrade import _build_instrument_from_position
+
+        pos = _make_mock_position(
+            symbol="AAPL 240315C150", instrument_type="Equity Option"
+        )
+        instrument = _build_instrument_from_position(pos)
+
+        assert instrument.asset_class == AssetClass.OPTION
+
+    def test_future(self) -> None:
+        """Future position should produce FUTURE instrument."""
+        from sysls.execution.venues.tastytrade import _build_instrument_from_position
+
+        pos = _make_mock_position(symbol="ESH5", instrument_type="Future")
+        instrument = _build_instrument_from_position(pos)
+
+        assert instrument.asset_class == AssetClass.FUTURE
+
+    def test_cryptocurrency(self) -> None:
+        """Cryptocurrency position should produce CRYPTO_SPOT instrument."""
+        from sysls.execution.venues.tastytrade import _build_instrument_from_position
+
+        pos = _make_mock_position(symbol="BTC/USD", instrument_type="Cryptocurrency")
+        instrument = _build_instrument_from_position(pos)
+
+        assert instrument.asset_class == AssetClass.CRYPTO_SPOT
+
+    def test_unknown_type_defaults_to_equity(self) -> None:
+        """Unknown instrument type should default to EQUITY."""
+        from sysls.execution.venues.tastytrade import _build_instrument_from_position
+
+        pos = _make_mock_position(symbol="XYZ", instrument_type="Unknown")
+        instrument = _build_instrument_from_position(pos)
+
+        assert instrument.asset_class == AssetClass.EQUITY

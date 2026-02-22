@@ -375,7 +375,25 @@ class TastytradeAdapter(VenueAdapter):
         Raises:
             VenueError: If positions cannot be fetched.
         """
-        raise NotImplementedError
+        from decimal import Decimal as Dec
+
+        session = self._require_session()
+
+        try:
+            raw_positions = self._account.get_positions(session)
+        except Exception as exc:
+            self._wrap_tt_error(exc, context="get_positions")
+
+        positions: dict[Instrument, Dec] = {}
+        for pos in raw_positions:
+            quantity = Dec(str(getattr(pos, "quantity", 0)))
+            if quantity == Dec("0"):
+                continue
+
+            instrument = _build_instrument_from_position(pos)
+            positions[instrument] = quantity
+
+        return positions
 
     async def get_balances(self) -> dict[str, Decimal]:
         """Get account balances from tastytrade.
@@ -387,7 +405,36 @@ class TastytradeAdapter(VenueAdapter):
         Raises:
             VenueError: If balances cannot be fetched.
         """
-        raise NotImplementedError
+        from decimal import Decimal as Dec
+
+        session = self._require_session()
+
+        try:
+            balance = self._account.get_balances(session)
+        except Exception as exc:
+            self._wrap_tt_error(exc, context="get_balances")
+
+        result: dict[str, Dec] = {}
+
+        # Extract standard balance fields
+        for field_name in (
+            "cash_balance",
+            "net_liquidating_value",
+            "equity_buying_power",
+            "derivative_buying_power",
+            "day_trading_buying_power",
+            "maintenance_excess",
+        ):
+            value = getattr(balance, field_name, None)
+            if value is not None:
+                try:
+                    dec_value = Dec(str(value))
+                    if dec_value != Dec("0"):
+                        result[field_name] = dec_value
+                except Exception:
+                    continue
+
+        return result
 
     # -- Private helpers ---------------------------------------------------
 
@@ -553,13 +600,36 @@ def _map_tt_status(tt_status: str) -> OrderStatus:
     return _TT_STATUS_MAP.get(tt_status, OrderStatus.PENDING)
 
 
+# Mapping from tastytrade InstrumentType strings to sysls AssetClass.
+_TT_INSTRUMENT_TYPE_MAP: dict[str, AssetClass] = {
+    "Equity": AssetClass.EQUITY,
+    "Equity Option": AssetClass.OPTION,
+    "Future": AssetClass.FUTURE,
+    "Future Option": AssetClass.OPTION,
+    "Cryptocurrency": AssetClass.CRYPTO_SPOT,
+}
+
+
 def _build_instrument_from_position(position: Any) -> Instrument:
     """Build a sysls Instrument from a tastytrade CurrentPosition.
 
     Args:
-        position: A tastytrade CurrentPosition object.
+        position: A tastytrade CurrentPosition object with symbol,
+            instrument_type, and underlying_symbol attributes.
 
     Returns:
-        A sysls Instrument.
+        A sysls Instrument with appropriate asset class and venue.
     """
-    raise NotImplementedError
+    symbol = getattr(position, "symbol", "")
+    instrument_type_raw = getattr(position, "instrument_type", None)
+
+    # Extract the string value from the enum
+    instrument_type_str = getattr(instrument_type_raw, "value", str(instrument_type_raw or ""))
+    asset_class = _TT_INSTRUMENT_TYPE_MAP.get(instrument_type_str, AssetClass.EQUITY)
+
+    return Instrument(
+        symbol=symbol,
+        asset_class=asset_class,
+        venue=Venue.TASTYTRADE,
+        currency="USD",
+    )
