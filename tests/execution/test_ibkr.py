@@ -24,7 +24,13 @@ from sysls.core.types import (
     TimeInForce,
     Venue,
 )
-from sysls.execution.venues.ibkr import IbkrAdapter, _map_ib_status, _to_ib_contract, _to_ib_order
+from sysls.execution.venues.ibkr import (
+    IbkrAdapter,
+    _build_instrument_from_contract,
+    _map_ib_status,
+    _to_ib_contract,
+    _to_ib_order,
+)
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -671,3 +677,231 @@ async def test_get_order_status_not_found(event_bus: EventBus) -> None:
         status = await adapter.get_order_status("999", _make_equity_instrument())
 
     assert status == OrderStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
+# Build instrument from contract tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_contract(
+    sec_type: str = "STK",
+    symbol: str = "AAPL",
+    exchange: str = "SMART",
+    currency: str = "USD",
+    multiplier: str = "",
+) -> MagicMock:
+    """Create a mock ib_async Contract."""
+    contract = MagicMock()
+    contract.secType = sec_type
+    contract.symbol = symbol
+    contract.exchange = exchange
+    contract.currency = currency
+    contract.multiplier = multiplier
+    return contract
+
+
+def test_build_instrument_from_stock_contract() -> None:
+    """Stock contract should produce an EQUITY instrument."""
+    contract = _make_mock_contract(sec_type="STK", symbol="AAPL")
+    instrument = _build_instrument_from_contract(contract)
+    assert instrument.symbol == "AAPL"
+    assert instrument.asset_class == AssetClass.EQUITY
+    assert instrument.venue == Venue.IBKR
+    assert instrument.exchange == "SMART"
+    assert instrument.currency == "USD"
+    assert instrument.multiplier == Decimal("1")
+
+
+def test_build_instrument_from_future_contract() -> None:
+    """Future contract should produce a FUTURE instrument with multiplier."""
+    contract = _make_mock_contract(sec_type="FUT", symbol="ES", exchange="CME", multiplier="50")
+    instrument = _build_instrument_from_contract(contract)
+    assert instrument.symbol == "ES"
+    assert instrument.asset_class == AssetClass.FUTURE
+    assert instrument.exchange == "CME"
+    assert instrument.multiplier == Decimal("50")
+
+
+def test_build_instrument_from_option_contract() -> None:
+    """Option contract should produce an OPTION instrument."""
+    contract = _make_mock_contract(sec_type="OPT", symbol="AAPL", multiplier="100")
+    instrument = _build_instrument_from_contract(contract)
+    assert instrument.asset_class == AssetClass.OPTION
+    assert instrument.multiplier == Decimal("100")
+
+
+def test_build_instrument_from_forex_contract() -> None:
+    """Forex contract should produce a CRYPTO_SPOT instrument."""
+    contract = _make_mock_contract(
+        sec_type="CASH", symbol="EUR", exchange="IDEALPRO", currency="USD"
+    )
+    instrument = _build_instrument_from_contract(contract)
+    assert instrument.asset_class == AssetClass.CRYPTO_SPOT
+    assert instrument.symbol == "EUR"
+
+
+def test_build_instrument_unknown_sec_type_defaults_to_equity() -> None:
+    """Unknown secType should default to EQUITY."""
+    contract = _make_mock_contract(sec_type="UNKNOWN", symbol="XYZ")
+    instrument = _build_instrument_from_contract(contract)
+    assert instrument.asset_class == AssetClass.EQUITY
+
+
+# ---------------------------------------------------------------------------
+# Position tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_position(
+    symbol: str = "AAPL",
+    sec_type: str = "STK",
+    position: float = 100.0,
+    avg_cost: float = 150.0,
+) -> MagicMock:
+    """Create a mock IB Position namedtuple."""
+    pos = MagicMock()
+    pos.contract = _make_mock_contract(sec_type=sec_type, symbol=symbol)
+    pos.position = position
+    pos.avgCost = avg_cost
+    pos.account = "DU12345"
+    return pos
+
+
+@pytest.mark.asyncio
+async def test_get_positions_empty(event_bus: EventBus) -> None:
+    """get_positions should return empty dict when no positions."""
+    mock_ib = _make_mock_ib()
+    mock_ib.positions.return_value = []
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        positions = await adapter.get_positions()
+
+    assert positions == {}
+
+
+@pytest.mark.asyncio
+async def test_get_positions_long(event_bus: EventBus) -> None:
+    """get_positions should return positive quantity for long positions."""
+    mock_ib = _make_mock_ib()
+    mock_ib.positions.return_value = [
+        _make_mock_position(symbol="AAPL", position=100.0),
+    ]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        positions = await adapter.get_positions()
+
+    assert len(positions) == 1
+    instrument = next(iter(positions.keys()))
+    assert instrument.symbol == "AAPL"
+    assert instrument.asset_class == AssetClass.EQUITY
+    assert positions[instrument] == Decimal("100.0")
+
+
+@pytest.mark.asyncio
+async def test_get_positions_short(event_bus: EventBus) -> None:
+    """get_positions should return negative quantity for short positions."""
+    mock_ib = _make_mock_ib()
+    mock_ib.positions.return_value = [
+        _make_mock_position(symbol="TSLA", position=-50.0),
+    ]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        positions = await adapter.get_positions()
+
+    assert len(positions) == 1
+    qty = next(iter(positions.values()))
+    assert qty == Decimal("-50.0")
+
+
+@pytest.mark.asyncio
+async def test_get_positions_skips_zero(event_bus: EventBus) -> None:
+    """get_positions should skip positions with zero quantity."""
+    mock_ib = _make_mock_ib()
+    mock_ib.positions.return_value = [
+        _make_mock_position(symbol="AAPL", position=0.0),
+        _make_mock_position(symbol="MSFT", position=200.0),
+    ]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        positions = await adapter.get_positions()
+
+    assert len(positions) == 1
+    instrument = next(iter(positions.keys()))
+    assert instrument.symbol == "MSFT"
+
+
+# ---------------------------------------------------------------------------
+# Balance tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_account_value(
+    tag: str, value: str, currency: str = "USD", account: str = "DU12345"
+) -> MagicMock:
+    """Create a mock IB AccountValue namedtuple."""
+    av = MagicMock()
+    av.tag = tag
+    av.value = value
+    av.currency = currency
+    av.account = account
+    av.modelCode = ""
+    return av
+
+
+@pytest.mark.asyncio
+async def test_get_balances(event_bus: EventBus) -> None:
+    """get_balances should return CashBalance values by currency."""
+    mock_ib = _make_mock_ib()
+    mock_ib.accountValues.return_value = [
+        _make_mock_account_value("CashBalance", "50000.00", "USD"),
+        _make_mock_account_value("CashBalance", "10000.00", "EUR"),
+        _make_mock_account_value("NetLiquidation", "75000.00", "USD"),  # Should be ignored
+        _make_mock_account_value("CashBalance", "0", "GBP"),  # Zero, should be excluded
+        _make_mock_account_value("CashBalance", "5000.00", "BASE"),  # BASE, should be excluded
+    ]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        balances = await adapter.get_balances()
+
+    assert balances["USD"] == Decimal("50000.00")
+    assert balances["EUR"] == Decimal("10000.00")
+    assert "GBP" not in balances
+    assert "BASE" not in balances
+    assert len(balances) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_balances_empty(event_bus: EventBus) -> None:
+    """get_balances should return empty dict when no account values."""
+    mock_ib = _make_mock_ib()
+    mock_ib.accountValues.return_value = []
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        balances = await adapter.get_balances()
+
+    assert balances == {}

@@ -22,6 +22,7 @@ from sysls.core.types import (
     OrderStatus,
     OrderType,
     Side,
+    Venue,
 )
 from sysls.execution.venues.base import VenueAdapter
 
@@ -278,7 +279,25 @@ class IbkrAdapter(VenueAdapter):
         Raises:
             VenueError: If positions cannot be fetched.
         """
-        raise NotImplementedError
+        from decimal import Decimal as Dec
+
+        ib = self._require_ib()
+
+        try:
+            raw_positions = await asyncio.to_thread(ib.positions)
+        except Exception as exc:
+            self._wrap_ib_error(exc, context="get_positions")
+
+        positions: dict[Instrument, Dec] = {}
+        for pos in raw_positions:
+            quantity = Dec(str(pos.position))
+            if quantity == Dec("0"):
+                continue
+
+            instrument = _build_instrument_from_contract(pos.contract)
+            positions[instrument] = quantity
+
+        return positions
 
     async def get_balances(self) -> dict[str, Decimal]:
         """Get account balances from Interactive Brokers.
@@ -289,7 +308,26 @@ class IbkrAdapter(VenueAdapter):
         Raises:
             VenueError: If balances cannot be fetched.
         """
-        raise NotImplementedError
+        from decimal import Decimal as Dec
+
+        ib = self._require_ib()
+
+        try:
+            account_values = await asyncio.to_thread(ib.accountValues)
+        except Exception as exc:
+            self._wrap_ib_error(exc, context="get_balances")
+
+        balances: dict[str, Dec] = {}
+        for av in account_values:
+            if av.tag == "CashBalance" and av.currency and av.currency != "BASE":
+                try:
+                    amount = Dec(av.value)
+                except Exception:
+                    continue
+                if amount != Dec("0"):
+                    balances[av.currency] = amount
+
+        return balances
 
     # -- Private helpers ---------------------------------------------------
 
@@ -456,3 +494,43 @@ def _map_ib_status(ib_status: str) -> OrderStatus:
         Corresponding sysls OrderStatus.
     """
     return _IB_STATUS_MAP.get(ib_status, OrderStatus.PENDING)
+
+
+# Mapping from IB secType to sysls AssetClass.
+_SEC_TYPE_MAP: dict[str, AssetClass] = {
+    "STK": AssetClass.EQUITY,
+    "OPT": AssetClass.OPTION,
+    "FUT": AssetClass.FUTURE,
+    "CASH": AssetClass.CRYPTO_SPOT,
+}
+
+
+def _build_instrument_from_contract(contract: Any) -> Instrument:
+    """Build a sysls Instrument from an ib_async Contract.
+
+    Args:
+        contract: An ib_async Contract (from a Position object).
+
+    Returns:
+        A sysls Instrument.
+    """
+    from decimal import Decimal as Dec
+
+    sec_type = getattr(contract, "secType", "STK")
+    asset_class = _SEC_TYPE_MAP.get(sec_type, AssetClass.EQUITY)
+
+    symbol = getattr(contract, "symbol", "")
+    exchange = getattr(contract, "exchange", None) or "SMART"
+    currency = getattr(contract, "currency", "USD")
+
+    multiplier_str = getattr(contract, "multiplier", "")
+    multiplier = Dec(multiplier_str) if multiplier_str else Dec("1")
+
+    return Instrument(
+        symbol=symbol,
+        asset_class=asset_class,
+        venue=Venue.IBKR,
+        exchange=exchange,
+        currency=currency,
+        multiplier=multiplier,
+    )
