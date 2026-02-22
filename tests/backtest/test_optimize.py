@@ -231,21 +231,76 @@ class TestGridSearch:
 
     def test_basic_search(self) -> None:
         """Grid search returns valid result with correct structure."""
+        from sysls.backtest.optimize import GridSearchResult, ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005, 0.01]})
+        result = grid_search(prices, _simple_signal_func, param_grid)
+
+        assert isinstance(result, GridSearchResult)
+        assert "threshold" in result.best_params
+        assert isinstance(result.best_score, float)
+        assert len(result.all_results) == 3
 
     def test_best_params_highest_metric(self) -> None:
         """Best params correspond to the highest metric value."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005, 0.01]})
+        result = grid_search(prices, _simple_signal_func, param_grid, metric="sharpe_ratio")
+
+        # Best should have highest sharpe among all results
+        all_sharpes = [r.sharpe_ratio for _, r in result.all_results]
+        assert result.best_score == all_sharpes[0]  # first after sort
+        # Verify descending order
+        for i in range(len(all_sharpes) - 1):
+            assert all_sharpes[i] >= all_sharpes[i + 1]
 
     def test_max_drawdown_ascending(self) -> None:
         """When metric is max_drawdown, lower is better."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005, 0.01]})
+        result = grid_search(prices, _simple_signal_func, param_grid, metric="max_drawdown")
+
+        # Sorted ascending: lowest drawdown first
+        all_dd = [r.max_drawdown for _, r in result.all_results]
+        for i in range(len(all_dd) - 1):
+            assert all_dd[i] <= all_dd[i + 1]
 
     def test_single_param_grid(self) -> None:
         """Grid search works with a single parameter."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.005]})
+        result = grid_search(prices, _simple_signal_func, param_grid)
+
+        assert len(result.all_results) == 1
+        assert result.best_params == {"threshold": 0.005}
 
     def test_all_results_populated(self) -> None:
         """All parameter combinations appear in all_results."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005, 0.01, 0.02]})
+        result = grid_search(prices, _simple_signal_func, param_grid)
+
+        result_params = [p for p, _ in result.all_results]
+        for expected in [{"threshold": t} for t in [0.0, 0.005, 0.01, 0.02]]:
+            assert expected in result_params
 
     def test_invalid_metric_raises(self) -> None:
         """Invalid metric name raises ValueError."""
+        from sysls.backtest.optimize import ParameterGrid, grid_search
+
+        prices = _make_trending_prices(50)
+        param_grid = ParameterGrid({"threshold": [0.0]})
+        with pytest.raises(ValueError, match="Invalid metric"):
+            grid_search(prices, _simple_signal_func, param_grid, metric="not_a_metric")
 
 
 # ---------------------------------------------------------------------------

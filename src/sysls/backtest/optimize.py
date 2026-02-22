@@ -34,7 +34,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import BaseModel, ConfigDict
 
-from sysls.backtest.metrics import BacktestResult  # noqa: TC001 (Pydantic field type)
+from sysls.backtest.metrics import BacktestResult
+from sysls.backtest.vectorized import run_vectorized_backtest
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -191,7 +192,50 @@ def grid_search(
         ValueError: If *param_grid* is empty or *metric* is not a valid
             :class:`BacktestResult` attribute.
     """
-    raise NotImplementedError
+    import numpy as np
+
+    # Validate metric name against BacktestResult fields.
+    if metric not in BacktestResult.model_fields:
+        raise ValueError(
+            f"Invalid metric {metric!r}. "
+            f"Must be one of: {sorted(BacktestResult.model_fields)}"
+        )
+
+    prices_arr = np.asarray(prices, dtype=np.float64)
+    all_results: list[tuple[dict[str, Any], BacktestResult]] = []
+
+    for params in param_grid:
+        signals = signal_func(prices_arr, **params)
+        result = run_vectorized_backtest(
+            prices_arr,
+            signals,
+            initial_capital=initial_capital,
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+            periods_per_year=periods_per_year,
+        )
+        all_results.append((params, result))
+        logger.debug("grid_search.evaluated", params=params, score=getattr(result, metric))
+
+    # Sort: for max_drawdown lower is better, otherwise higher is better.
+    reverse = metric != "max_drawdown"
+    all_results.sort(key=lambda x: getattr(x[1], metric), reverse=reverse)
+
+    best_params, best_result = all_results[0]
+    best_score = float(getattr(best_result, metric))
+
+    logger.info(
+        "grid_search.complete",
+        n_combos=len(all_results),
+        best_params=best_params,
+        best_score=best_score,
+    )
+
+    return GridSearchResult(
+        best_params=best_params,
+        best_score=best_score,
+        all_results=all_results,
+    )
 
 
 # ---------------------------------------------------------------------------
