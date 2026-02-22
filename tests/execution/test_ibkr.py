@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sysls.core.bus import EventBus
+from sysls.core.events import OrderAccepted, OrderCancelled
 from sysls.core.exceptions import ConnectionError as SyslsConnectionError
 from sysls.core.exceptions import OrderError, VenueError
 from sysls.core.types import (
@@ -499,3 +500,174 @@ def test_to_ib_order_stop_limit_missing_prices_raises() -> None:
     )
     with pytest.raises(OrderError, match="Stop-limit order requires both"):
         _to_ib_order(order)
+
+
+# ---------------------------------------------------------------------------
+# Submit order tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_trade(order_id: int = 42, status: str = "Submitted") -> MagicMock:
+    """Create a mock ib_async Trade object."""
+    trade = MagicMock()
+    trade.order.orderId = order_id
+    trade.orderStatus.status = status
+    return trade
+
+
+@pytest.mark.asyncio
+async def test_submit_market_order(event_bus: EventBus) -> None:
+    """submit_order should call placeOrder and emit OrderAccepted."""
+    import asyncio
+
+    accepted_events: list[OrderAccepted] = []
+
+    async def capture(event: OrderAccepted) -> None:
+        accepted_events.append(event)
+
+    event_bus.subscribe(OrderAccepted, capture)
+    await event_bus.start()
+
+    mock_ib = _make_mock_ib()
+    mock_trade = _make_mock_trade(order_id=42)
+    mock_ib.placeOrder.return_value = mock_trade
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        order = _make_order(side=Side.BUY, order_type=OrderType.MARKET, quantity=Decimal("100"))
+        venue_order_id = await adapter.submit_order(order)
+
+    await asyncio.sleep(0.05)
+    await event_bus.stop()
+
+    assert venue_order_id == "42"
+    mock_ib.placeOrder.assert_called_once()
+
+    assert len(accepted_events) == 1
+    assert accepted_events[0].venue_order_id == "42"
+    assert accepted_events[0].order_id == order.order_id
+
+
+@pytest.mark.asyncio
+async def test_submit_order_error_wrapping(event_bus: EventBus) -> None:
+    """submit_order should wrap IB errors as VenueError."""
+    await event_bus.start()
+
+    mock_ib = _make_mock_ib()
+    mock_ib.placeOrder.side_effect = RuntimeError("API not available")
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        with pytest.raises(VenueError, match="API not available"):
+            await adapter.submit_order(_make_order())
+
+    await event_bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_submit_order_not_connected_raises(event_bus: EventBus) -> None:
+    """submit_order should raise VenueError when not connected."""
+    adapter = IbkrAdapter(bus=event_bus)
+    with pytest.raises(VenueError, match="Not connected"):
+        await adapter.submit_order(_make_order())
+
+
+# ---------------------------------------------------------------------------
+# Cancel order tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_order(event_bus: EventBus) -> None:
+    """cancel_order should find the trade and cancel it."""
+    import asyncio
+
+    cancelled_events: list[OrderCancelled] = []
+
+    async def capture(event: OrderCancelled) -> None:
+        cancelled_events.append(event)
+
+    event_bus.subscribe(OrderCancelled, capture)
+    await event_bus.start()
+
+    mock_ib = _make_mock_ib()
+    mock_trade = _make_mock_trade(order_id=42)
+    mock_ib.openTrades.return_value = [mock_trade]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        instrument = _make_equity_instrument()
+        await adapter.cancel_order("42", instrument)
+
+    await asyncio.sleep(0.05)
+    await event_bus.stop()
+
+    mock_ib.cancelOrder.assert_called_once_with(mock_trade.order)
+    assert len(cancelled_events) == 1
+    assert cancelled_events[0].reason == "Cancelled via IBKR"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_not_found_raises(event_bus: EventBus) -> None:
+    """cancel_order should raise OrderError if order not in open trades."""
+    await event_bus.start()
+
+    mock_ib = _make_mock_ib()
+    mock_ib.openTrades.return_value = []
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        with pytest.raises(OrderError, match="not found in open trades"):
+            await adapter.cancel_order("999", _make_equity_instrument())
+
+    await event_bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# Get order status tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_found(event_bus: EventBus) -> None:
+    """get_order_status should find the trade and return mapped status."""
+    mock_ib = _make_mock_ib()
+    mock_trade = _make_mock_trade(order_id=42, status="Filled")
+    mock_ib.trades.return_value = [mock_trade]
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        status = await adapter.get_order_status("42", _make_equity_instrument())
+
+    assert status == OrderStatus.FILLED
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_not_found(event_bus: EventBus) -> None:
+    """get_order_status should return PENDING if order not found."""
+    mock_ib = _make_mock_ib()
+    mock_ib.trades.return_value = []
+    mock_ib_class = MagicMock(return_value=mock_ib)
+
+    with patch.dict("sys.modules", {"ib_async": MagicMock(IB=mock_ib_class)}):
+        adapter = IbkrAdapter(bus=event_bus)
+        await adapter.connect()
+
+        status = await adapter.get_order_status("999", _make_equity_instrument())
+
+    assert status == OrderStatus.PENDING

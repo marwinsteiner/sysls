@@ -8,10 +8,12 @@ blocking the event loop.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from sysls.core.events import OrderAccepted, OrderCancelled
 from sysls.core.exceptions import ConnectionError as SyslsConnectionError
 from sysls.core.exceptions import OrderError, VenueError
 from sysls.core.types import (
@@ -164,7 +166,41 @@ class IbkrAdapter(VenueAdapter):
             OrderError: If the order cannot be submitted.
             VenueError: If there is a connectivity issue.
         """
-        raise NotImplementedError
+        ib = self._require_ib()
+        contract = _to_ib_contract(order.instrument)
+        ib_order = _to_ib_order(order)
+
+        self._logger.info(
+            "ibkr_order_submitting",
+            symbol=order.instrument.symbol,
+            side=order.side.value,
+            order_type=order.order_type.value,
+            quantity=str(order.quantity),
+        )
+
+        try:
+            trade = await asyncio.to_thread(ib.placeOrder, contract, ib_order)
+        except Exception as exc:
+            self._wrap_ib_error(exc, context=f"submit_order for {order.instrument.symbol}")
+
+        venue_order_id = str(trade.order.orderId)
+
+        self._logger.info(
+            "ibkr_order_submitted",
+            order_id=order.order_id,
+            venue_order_id=venue_order_id,
+        )
+
+        await self._bus.publish(
+            OrderAccepted(
+                order_id=order.order_id,
+                instrument=order.instrument,
+                venue_order_id=venue_order_id,
+                source=self.name,
+            )
+        )
+
+        return venue_order_id
 
     async def cancel_order(self, venue_order_id: str, instrument: Instrument) -> None:
         """Cancel an order on Interactive Brokers.
@@ -176,7 +212,40 @@ class IbkrAdapter(VenueAdapter):
         Raises:
             OrderError: If the order cannot be cancelled.
         """
-        raise NotImplementedError
+        ib = self._require_ib()
+        order_id = int(venue_order_id)
+
+        # Find the trade by order ID
+        trade = None
+        for t in ib.openTrades():
+            if t.order.orderId == order_id:
+                trade = t
+                break
+
+        if trade is None:
+            raise OrderError(
+                f"Order {venue_order_id} not found in open trades",
+                venue=self.name,
+            )
+
+        try:
+            await asyncio.to_thread(ib.cancelOrder, trade.order)
+        except Exception as exc:
+            self._wrap_ib_error(exc, context=f"cancel_order {venue_order_id}")
+
+        self._logger.info(
+            "ibkr_order_cancelled",
+            venue_order_id=venue_order_id,
+        )
+
+        await self._bus.publish(
+            OrderCancelled(
+                order_id=venue_order_id,
+                instrument=instrument,
+                reason="Cancelled via IBKR",
+                source=self.name,
+            )
+        )
 
     async def get_order_status(self, venue_order_id: str, instrument: Instrument) -> OrderStatus:
         """Query current status of an order at Interactive Brokers.
@@ -188,7 +257,14 @@ class IbkrAdapter(VenueAdapter):
         Returns:
             Current order status.
         """
-        raise NotImplementedError
+        ib = self._require_ib()
+        order_id = int(venue_order_id)
+
+        for trade in ib.trades():
+            if trade.order.orderId == order_id:
+                return _map_ib_status(trade.orderStatus.status)
+
+        return OrderStatus.PENDING
 
     # -- Position / balance queries ----------------------------------------
 
@@ -232,6 +308,42 @@ class IbkrAdapter(VenueAdapter):
                 venue=self.name,
             )
         return self._ib
+
+    def _wrap_ib_error(self, exc: Exception, context: str) -> None:
+        """Wrap an IB exception in a sysls exception and re-raise.
+
+        Args:
+            exc: The exception to wrap.
+            context: Description of the operation that failed.
+
+        Raises:
+            OrderError: For order-related errors.
+            SyslsConnectionError: For connection-related errors.
+            VenueError: For other errors.
+        """
+        self._logger.error(
+            "ibkr_error",
+            context=context,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+        if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
+            raise SyslsConnectionError(
+                f"{context}: {exc}",
+                venue=self.name,
+            ) from exc
+
+        if isinstance(exc, ValueError):
+            raise OrderError(
+                f"{context}: {exc}",
+                venue=self.name,
+            ) from exc
+
+        raise VenueError(
+            f"{context}: {exc}",
+            venue=self.name,
+        ) from exc
 
 
 def _to_ib_contract(instrument: Instrument) -> Any:
