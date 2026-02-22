@@ -352,4 +352,105 @@ def walk_forward(
     Raises:
         ValueError: If *n_splits* < 1 or data is too short to split.
     """
-    raise NotImplementedError
+    import numpy as np
+
+    from sysls.backtest.metrics import summarize_backtest
+
+    prices_arr = np.asarray(prices, dtype=np.float64)
+    n_samples = prices_arr.size
+
+    splitter = TimeSeriesSplit(
+        n_samples=n_samples,
+        n_splits=n_splits,
+        train_ratio=train_ratio,
+    )
+
+    splits: list[WalkForwardSplit] = []
+    oos_equity_segments: list[np.ndarray] = []
+
+    for idx, (train_start, train_end, oos_start, oos_end) in enumerate(splitter):
+        train_prices = prices_arr[train_start:train_end]
+        oos_prices = prices_arr[oos_start:oos_end]
+
+        # Grid search on training data to find best params.
+        train_result = grid_search(
+            train_prices,
+            signal_func,
+            param_grid,
+            initial_capital=initial_capital,
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+            metric=metric,
+            periods_per_year=periods_per_year,
+        )
+
+        best_params = train_result.best_params
+
+        # Backtest OOS data with the best params from training.
+        oos_signals = signal_func(oos_prices, **best_params)
+        oos_result = run_vectorized_backtest(
+            oos_prices,
+            oos_signals,
+            initial_capital=initial_capital,
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+            periods_per_year=periods_per_year,
+        )
+
+        oos_equity_segments.append(
+            np.array(oos_result.equity_curve, dtype=np.float64)
+        )
+
+        splits.append(
+            WalkForwardSplit(
+                split_index=idx,
+                train_start=train_start,
+                train_end=train_end,
+                oos_start=oos_start,
+                oos_end=oos_end,
+                best_params=best_params,
+                oos_result=oos_result,
+            )
+        )
+
+        logger.debug(
+            "walk_forward.split_complete",
+            split=idx,
+            best_params=best_params,
+            oos_return=oos_result.total_return,
+        )
+
+    # Concatenate OOS equity curves, chaining each segment's end
+    # value as the next segment's starting capital.
+    combined_equity_list: list[float] = []
+    current_capital = initial_capital
+    for segment in oos_equity_segments:
+        if segment.size == 0:
+            continue
+        # Scale segment so it starts at current_capital.
+        scale = current_capital / segment[0] if segment[0] != 0.0 else 1.0
+        scaled = segment * scale
+        combined_equity_list.extend(scaled.tolist())
+        current_capital = float(scaled[-1])
+
+    combined_equity_arr = np.array(combined_equity_list, dtype=np.float64)
+
+    combined_metrics = summarize_backtest(
+        equity_curve=combined_equity_arr,
+        trades=[],  # Individual trades not tracked across splits
+        initial_capital=initial_capital,
+        periods_per_year=periods_per_year,
+    )
+
+    logger.info(
+        "walk_forward.complete",
+        n_splits=n_splits,
+        combined_return=combined_metrics.total_return,
+        combined_sharpe=combined_metrics.sharpe_ratio,
+    )
+
+    return WalkForwardResult(
+        splits=splits,
+        combined_oos_equity=combined_equity_list,
+        combined_metrics=combined_metrics,
+    )

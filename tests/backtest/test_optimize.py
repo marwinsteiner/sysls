@@ -406,15 +406,94 @@ class TestWalkForward:
 
     def test_basic_walk_forward(self) -> None:
         """Walk-forward produces valid result with correct split count."""
+        from sysls.backtest.optimize import (
+            ParameterGrid,
+            WalkForwardResult,
+            walk_forward,
+        )
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005]})
+        result = walk_forward(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            n_splits=3,
+            train_ratio=0.7,
+        )
+
+        assert isinstance(result, WalkForwardResult)
+        assert len(result.splits) == 3
+        assert len(result.combined_oos_equity) > 0
 
     def test_oos_equity_concatenation(self) -> None:
         """Combined OOS equity has entries from all splits."""
+        from sysls.backtest.optimize import ParameterGrid, walk_forward
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005]})
+        result = walk_forward(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            n_splits=3,
+            train_ratio=0.7,
+        )
+
+        # Total OOS equity points should equal sum of per-split equity lengths
+        total_oos_points = sum(
+            len(s.oos_result.equity_curve) for s in result.splits
+        )
+        assert len(result.combined_oos_equity) == total_oos_points
 
     def test_combined_metrics_populated(self) -> None:
         """Combined metrics are computed over the full OOS equity."""
+        from sysls.backtest.optimize import ParameterGrid, walk_forward
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"threshold": [0.0]})
+        result = walk_forward(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            n_splits=2,
+            train_ratio=0.7,
+        )
+
+        metrics = result.combined_metrics
+        assert metrics.initial_capital == 100_000.0
+        assert len(metrics.equity_curve) == len(result.combined_oos_equity)
+        assert isinstance(metrics.sharpe_ratio, float)
 
     def test_split_params_may_differ(self) -> None:
-        """Different splits may select different best params."""
+        """Different splits can select different best params."""
+        from sysls.backtest.optimize import ParameterGrid, walk_forward
+
+        # Use a signal that behaves differently on different data slices
+        prices = _make_trending_prices(200)
+        param_grid = ParameterGrid({"threshold": [0.0, 0.005, 0.01]})
+        result = walk_forward(
+            prices,
+            _simple_signal_func,
+            param_grid,
+            n_splits=3,
+            train_ratio=0.5,
+        )
+
+        # Each split has best_params (they may be same or different)
+        for split in result.splits:
+            assert "threshold" in split.best_params
 
     def test_invalid_n_splits_raises(self) -> None:
         """n_splits < 1 raises ValueError."""
+        from sysls.backtest.optimize import ParameterGrid, walk_forward
+
+        prices = _make_trending_prices(100)
+        param_grid = ParameterGrid({"threshold": [0.0]})
+        with pytest.raises(ValueError, match="n_splits must be >= 1"):
+            walk_forward(
+                prices,
+                _simple_signal_func,
+                param_grid,
+                n_splits=0,
+            )
