@@ -6,7 +6,7 @@ All tests use mocked tastytrade SDK -- no real API calls are made.
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -88,36 +88,26 @@ class TestProperties:
 
     def test_name_property(self, event_bus: EventBus) -> None:
         """name should return 'tastytrade'."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         assert adapter.name == "tastytrade"
 
     def test_is_connected_false_when_not_connected(self, event_bus: EventBus) -> None:
         """is_connected should be False before connect()."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         assert not adapter.is_connected
 
     def test_supported_order_types(self, event_bus: EventBus) -> None:
         """supported_order_types should include MARKET, LIMIT, STOP, STOP_LIMIT."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         types = adapter.supported_order_types
         assert OrderType.MARKET in types
         assert OrderType.LIMIT in types
         assert OrderType.STOP in types
         assert OrderType.STOP_LIMIT in types
 
-    def test_require_session_raises_when_not_connected(
-        self, event_bus: EventBus
-    ) -> None:
+    def test_require_session_raises_when_not_connected(self, event_bus: EventBus) -> None:
         """_require_session should raise VenueError when not connected."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         with pytest.raises(VenueError, match="Not connected"):
             adapter._require_session()
 
@@ -253,9 +243,7 @@ class TestConnectDisconnect:
         mock_mod = _make_tastytrade_module()
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="user@test.com", password="secret123"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="user@test.com", password="secret123")
             await adapter.connect()
 
         assert adapter.is_connected
@@ -269,7 +257,9 @@ class TestConnectDisconnect:
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
             adapter = TastytradeAdapter(
-                bus=event_bus, login="user@test.com", password="secret123",
+                bus=event_bus,
+                login="user@test.com",
+                password="secret123",
                 is_test=True,
             )
             await adapter.connect()
@@ -286,7 +276,9 @@ class TestConnectDisconnect:
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
             adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass",
+                bus=event_bus,
+                login="user",
+                password="pass",
                 account_number="BBB222",
             )
             await adapter.connect()
@@ -304,9 +296,7 @@ class TestConnectDisconnect:
         mock_mod = _make_tastytrade_module(accounts=[acct1, acct2])
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
             await adapter.connect()
 
         assert adapter._account is acct1
@@ -319,7 +309,9 @@ class TestConnectDisconnect:
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
             adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass",
+                bus=event_bus,
+                login="user",
+                password="pass",
                 account_number="NOTFOUND",
             )
             with pytest.raises(SyslsConnectionError, match="NOTFOUND not found"):
@@ -331,9 +323,7 @@ class TestConnectDisconnect:
         mock_mod = _make_tastytrade_module(accounts=[])
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
             with pytest.raises(SyslsConnectionError, match="No accounts found"):
                 await adapter.connect()
 
@@ -345,9 +335,7 @@ class TestConnectDisconnect:
         saved = sys.modules.pop("tastytrade", None)
         try:
             with patch.dict("sys.modules", {"tastytrade": None}):
-                adapter = TastytradeAdapter(
-                    bus=event_bus, login="user", password="pass"
-                )
+                adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
                 with pytest.raises(SyslsConnectionError, match="tastytrade is not installed"):
                     await adapter.connect()
         finally:
@@ -357,28 +345,20 @@ class TestConnectDisconnect:
     @pytest.mark.asyncio
     async def test_connect_auth_failure(self, event_bus: EventBus) -> None:
         """connect() should raise SyslsConnectionError on auth failure."""
-        mock_mod = _make_tastytrade_module(
-            auth_error=RuntimeError("Invalid credentials")
-        )
+        mock_mod = _make_tastytrade_module(auth_error=RuntimeError("Invalid credentials"))
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="bad", password="wrong"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="bad", password="wrong")
             with pytest.raises(SyslsConnectionError, match="Failed to authenticate"):
                 await adapter.connect()
 
     @pytest.mark.asyncio
     async def test_connect_get_accounts_failure(self, event_bus: EventBus) -> None:
         """connect() should raise SyslsConnectionError if get_accounts fails."""
-        mock_mod = _make_tastytrade_module(
-            accounts_error=RuntimeError("API error")
-        )
+        mock_mod = _make_tastytrade_module(accounts_error=RuntimeError("API error"))
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
             with pytest.raises(SyslsConnectionError, match="Failed to retrieve accounts"):
                 await adapter.connect()
 
@@ -388,9 +368,7 @@ class TestConnectDisconnect:
         mock_mod = _make_tastytrade_module()
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
             await adapter.connect()
             assert adapter.is_connected
 
@@ -404,23 +382,17 @@ class TestConnectDisconnect:
     @pytest.mark.asyncio
     async def test_disconnect_when_not_connected(self, event_bus: EventBus) -> None:
         """disconnect() should be safe to call when not connected."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         await adapter.disconnect()  # Should not raise
         assert not adapter.is_connected
 
     @pytest.mark.asyncio
-    async def test_disconnect_destroy_exception_ignored(
-        self, event_bus: EventBus
-    ) -> None:
+    async def test_disconnect_destroy_exception_ignored(self, event_bus: EventBus) -> None:
         """disconnect() should ignore exceptions from session.destroy()."""
         mock_mod = _make_tastytrade_module()
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
             await adapter.connect()
             adapter._session.destroy.side_effect = RuntimeError("destroy failed")
 
@@ -434,9 +406,7 @@ class TestConnectDisconnect:
         mock_mod = _make_tastytrade_module()
 
         with patch.dict("sys.modules", {"tastytrade": mock_mod}):
-            adapter = TastytradeAdapter(
-                bus=event_bus, login="user", password="pass"
-            )
+            adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
 
             async with adapter as a:
                 assert a is adapter
@@ -516,9 +486,7 @@ def _setup_connected_adapter(
     if delete_order_error:
         mock_account.delete_order.side_effect = delete_order_error
 
-    adapter = TastytradeAdapter(
-        bus=event_bus, login="user", password="pass"
-    )
+    adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
     adapter._session = mock_session
     adapter._account = mock_account
 
@@ -548,10 +516,8 @@ class TestSubmitOrder:
 
         order_mod = _make_mock_order_module()
 
-        with patch.dict(
-            "sys.modules", {"tastytrade.order": order_mod}
-        ):
-            adapter, mock_session, mock_account = _setup_connected_adapter(
+        with patch.dict("sys.modules", {"tastytrade.order": order_mod}):
+            adapter, _mock_session, mock_account = _setup_connected_adapter(
                 event_bus,
                 order_response=_make_mock_placed_order_response(order_id=42),
             )
@@ -594,9 +560,7 @@ class TestSubmitOrder:
         mock_account.place_order.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_submit_sell_order_uses_sell_to_close(
-        self, event_bus: EventBus
-    ) -> None:
+    async def test_submit_sell_order_uses_sell_to_close(self, event_bus: EventBus) -> None:
         """submit_order with Side.SELL should use SELL_TO_CLOSE action."""
         import asyncio
 
@@ -616,9 +580,7 @@ class TestSubmitOrder:
     @pytest.mark.asyncio
     async def test_submit_order_not_connected_raises(self, event_bus: EventBus) -> None:
         """submit_order should raise VenueError when not connected."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         with pytest.raises(VenueError, match="Not connected"):
             await adapter.submit_order(_make_order())
 
@@ -680,9 +642,7 @@ class TestCancelOrder:
     @pytest.mark.asyncio
     async def test_cancel_order_not_connected_raises(self, event_bus: EventBus) -> None:
         """cancel_order should raise VenueError when not connected."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         with pytest.raises(VenueError, match="Not connected"):
             await adapter.cancel_order("999", _make_equity_instrument())
 
@@ -790,13 +750,9 @@ class TestGetOrderStatus:
         assert status == OrderStatus.PENDING
 
     @pytest.mark.asyncio
-    async def test_get_order_status_not_connected_raises(
-        self, event_bus: EventBus
-    ) -> None:
+    async def test_get_order_status_not_connected_raises(self, event_bus: EventBus) -> None:
         """get_order_status should raise VenueError when not connected."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         with pytest.raises(VenueError, match="Not connected"):
             await adapter.get_order_status("42", _make_equity_instrument())
 
@@ -956,13 +912,9 @@ class TestGetPositions:
         assert instrument.asset_class == AssetClass.OPTION
 
     @pytest.mark.asyncio
-    async def test_get_positions_not_connected_raises(
-        self, event_bus: EventBus
-    ) -> None:
+    async def test_get_positions_not_connected_raises(self, event_bus: EventBus) -> None:
         """get_positions should raise VenueError when not connected."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         with pytest.raises(VenueError, match="Not connected"):
             await adapter.get_positions()
 
@@ -1047,13 +999,9 @@ class TestGetBalances:
         assert balances["maintenance_excess"] == Decimal("20000.00")
 
     @pytest.mark.asyncio
-    async def test_get_balances_not_connected_raises(
-        self, event_bus: EventBus
-    ) -> None:
+    async def test_get_balances_not_connected_raises(self, event_bus: EventBus) -> None:
         """get_balances should raise VenueError when not connected."""
-        adapter = TastytradeAdapter(
-            bus=event_bus, login="user", password="pass"
-        )
+        adapter = TastytradeAdapter(bus=event_bus, login="user", password="pass")
         with pytest.raises(VenueError, match="Not connected"):
             await adapter.get_balances()
 
@@ -1091,9 +1039,7 @@ class TestBuildInstrument:
         """Equity Option position should produce OPTION instrument."""
         from sysls.execution.venues.tastytrade import _build_instrument_from_position
 
-        pos = _make_mock_position(
-            symbol="AAPL 240315C150", instrument_type="Equity Option"
-        )
+        pos = _make_mock_position(symbol="AAPL 240315C150", instrument_type="Equity Option")
         instrument = _build_instrument_from_position(pos)
 
         assert instrument.asset_class == AssetClass.OPTION
@@ -1124,3 +1070,105 @@ class TestBuildInstrument:
         instrument = _build_instrument_from_position(pos)
 
         assert instrument.asset_class == AssetClass.EQUITY
+
+
+# ---------------------------------------------------------------------------
+# Error wrapping tests
+# ---------------------------------------------------------------------------
+
+
+class TestWrapTtError:
+    """Test _wrap_tt_error exception mapping."""
+
+    @pytest.mark.asyncio
+    async def test_connection_error_wraps_as_connection_error(self, event_bus: EventBus) -> None:
+        """ConnectionError should be wrapped as SyslsConnectionError."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = ConnectionError("Lost connection")
+
+        with pytest.raises(SyslsConnectionError, match="Lost connection"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_timeout_error_wraps_as_connection_error(self, event_bus: EventBus) -> None:
+        """TimeoutError should be wrapped as SyslsConnectionError."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = TimeoutError("Timed out")
+
+        with pytest.raises(SyslsConnectionError, match="Timed out"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_os_error_wraps_as_connection_error(self, event_bus: EventBus) -> None:
+        """OSError should be wrapped as SyslsConnectionError."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = OSError("Network unreachable")
+
+        with pytest.raises(SyslsConnectionError, match="Network unreachable"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_value_error_wraps_as_order_error(self, event_bus: EventBus) -> None:
+        """ValueError should be wrapped as OrderError."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = ValueError("Invalid quantity")
+
+        with pytest.raises(OrderError, match="Invalid quantity"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_tastytrade_error_auth_wraps_as_connection_error(
+        self, event_bus: EventBus
+    ) -> None:
+        """TastytradeError with auth keyword should be SyslsConnectionError."""
+
+        # Create a fake TastytradeError class for testing
+        class TastytradeError(Exception):
+            pass
+
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = TastytradeError(
+            "Authentication failed: invalid session token"
+        )
+
+        with pytest.raises(SyslsConnectionError, match="Authentication failed"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_tastytrade_error_order_wraps_as_order_error(self, event_bus: EventBus) -> None:
+        """TastytradeError with order keyword should be OrderError."""
+
+        class TastytradeError(Exception):
+            pass
+
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = TastytradeError(
+            "Invalid order: quantity too large"
+        )
+
+        with pytest.raises(OrderError, match="Invalid order"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_tastytrade_error_generic_wraps_as_venue_error(
+        self, event_bus: EventBus
+    ) -> None:
+        """TastytradeError without keywords should be VenueError."""
+
+        class TastytradeError(Exception):
+            pass
+
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = TastytradeError("Internal server error")
+
+        with pytest.raises(VenueError, match="Internal server error"):
+            await adapter.get_positions()
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_wraps_as_venue_error(self, event_bus: EventBus) -> None:
+        """Generic exceptions should be wrapped as VenueError."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_positions.side_effect = RuntimeError("Unexpected failure")
+
+        with pytest.raises(VenueError, match="Unexpected failure"):
+            await adapter.get_positions()

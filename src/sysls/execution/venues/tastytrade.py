@@ -99,12 +99,10 @@ class TastytradeAdapter(VenueAdapter):
                 authentication fails, or no accounts are found.
         """
         try:
-            from tastytrade import Account, ProductionSession
-            from tastytrade import CertificationSession
+            from tastytrade import Account, CertificationSession, ProductionSession
         except ImportError as exc:
             raise SyslsConnectionError(
-                "tastytrade is not installed. "
-                "Install it with: pip install 'sysls[tastytrade]'",
+                "tastytrade is not installed. Install it with: pip install 'sysls[tastytrade]'",
                 venue=self.name,
             ) from exc
 
@@ -135,8 +133,7 @@ class TastytradeAdapter(VenueAdapter):
 
         if self._account_number:
             matched = [
-                a for a in accounts
-                if getattr(a, "account_number", None) == self._account_number
+                a for a in accounts if getattr(a, "account_number", None) == self._account_number
             ]
             if not matched:
                 raise SyslsConnectionError(
@@ -163,10 +160,10 @@ class TastytradeAdapter(VenueAdapter):
         multiple times.
         """
         if self._session is not None:
-            try:
+            import contextlib
+
+            with contextlib.suppress(Exception):
                 self._session.destroy()
-            except Exception:
-                pass  # Best-effort cleanup
             self._session = None
             self._account = None
             self._logger.info("tastytrade_disconnected")
@@ -211,14 +208,7 @@ class TastytradeAdapter(VenueAdapter):
         session = self._require_session()
 
         try:
-            from tastytrade.order import (
-                InstrumentType,
-                Leg,
-                NewOrder,
-                OrderAction,
-                OrderTimeInForce,
-                OrderType as TtOrderType,
-            )
+            from tastytrade.order import Leg, NewOrder, OrderAction
         except ImportError as exc:
             raise VenueError(
                 f"Failed to import tastytrade order types: {exc}",
@@ -226,18 +216,13 @@ class TastytradeAdapter(VenueAdapter):
             ) from exc
 
         # Map sysls Side to tastytrade OrderAction
-        if order.side == Side.BUY:
-            action = OrderAction.BUY_TO_OPEN
-        else:
-            action = OrderAction.SELL_TO_CLOSE
+        action = OrderAction.BUY_TO_OPEN if order.side == Side.BUY else OrderAction.SELL_TO_CLOSE
 
         # Map sysls OrderType to tastytrade OrderType
         tt_order_type = _map_sysls_order_type(order.order_type)
 
         # Map instrument asset class to tastytrade InstrumentType
-        tt_instrument_type = _map_asset_class_to_instrument_type(
-            order.instrument.asset_class
-        )
+        tt_instrument_type = _map_asset_class_to_instrument_type(order.instrument.asset_class)
 
         leg = Leg(
             instrument_type=tt_instrument_type,
@@ -268,9 +253,7 @@ class TastytradeAdapter(VenueAdapter):
         try:
             response = self._account.place_order(session, new_order, dry_run=False)
         except Exception as exc:
-            self._wrap_tt_error(
-                exc, context=f"submit_order for {order.instrument.symbol}"
-            )
+            self._wrap_tt_error(exc, context=f"submit_order for {order.instrument.symbol}")
 
         # Extract venue order ID from response
         venue_order_id = str(response.order.id)
@@ -312,9 +295,7 @@ class TastytradeAdapter(VenueAdapter):
         try:
             self._account.delete_order(session, int(venue_order_id))
         except Exception as exc:
-            self._wrap_tt_error(
-                exc, context=f"cancel_order {venue_order_id}"
-            )
+            self._wrap_tt_error(exc, context=f"cancel_order {venue_order_id}")
 
         self._logger.info(
             "tastytrade_order_cancelled",
@@ -330,9 +311,7 @@ class TastytradeAdapter(VenueAdapter):
             )
         )
 
-    async def get_order_status(
-        self, venue_order_id: str, instrument: Instrument
-    ) -> OrderStatus:
+    async def get_order_status(self, venue_order_id: str, instrument: Instrument) -> OrderStatus:
         """Query current status of an order at tastytrade.
 
         Args:
@@ -351,9 +330,7 @@ class TastytradeAdapter(VenueAdapter):
         try:
             placed_order = self._account.get_order(session, int(venue_order_id))
         except Exception as exc:
-            self._wrap_tt_error(
-                exc, context=f"get_order_status {venue_order_id}"
-            )
+            self._wrap_tt_error(exc, context=f"get_order_status {venue_order_id}")
 
         status_str = getattr(placed_order, "status", None)
         if status_str is None:
@@ -555,8 +532,9 @@ def _map_time_in_force(tif: Any) -> Any:
     Returns:
         The corresponding tastytrade OrderTimeInForce.
     """
-    from sysls.core.types import TimeInForce
     from tastytrade.order import OrderTimeInForce
+
+    from sysls.core.types import TimeInForce
 
     mapping = {
         TimeInForce.GTC: OrderTimeInForce.GTC,
