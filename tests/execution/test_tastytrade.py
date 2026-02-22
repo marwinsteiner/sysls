@@ -443,3 +443,262 @@ class TestConnectDisconnect:
                 assert adapter.is_connected
 
         assert not adapter.is_connected
+
+
+# ---------------------------------------------------------------------------
+# Mock helpers for order operations
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_order_module() -> MagicMock:
+    """Create a mock tastytrade.order module with all needed types."""
+    order_mod = MagicMock()
+
+    # OrderAction enum-like values
+    order_mod.OrderAction.BUY_TO_OPEN = "Buy to Open"
+    order_mod.OrderAction.SELL_TO_CLOSE = "Sell to Close"
+
+    # OrderType enum-like values
+    order_mod.OrderType.MARKET = "Market"
+    order_mod.OrderType.LIMIT = "Limit"
+    order_mod.OrderType.STOP = "Stop"
+    order_mod.OrderType.STOP_LIMIT = "Stop Limit"
+
+    # OrderTimeInForce enum-like values
+    order_mod.OrderTimeInForce.GTC = "GTC"
+    order_mod.OrderTimeInForce.DAY = "Day"
+    order_mod.OrderTimeInForce.IOC = "IOC"
+    order_mod.OrderTimeInForce.GTD = "GTD"
+
+    # InstrumentType enum-like values
+    order_mod.InstrumentType.EQUITY = "Equity"
+    order_mod.InstrumentType.EQUITY_OPTION = "Equity Option"
+    order_mod.InstrumentType.FUTURE = "Future"
+    order_mod.InstrumentType.CRYPTOCURRENCY = "Cryptocurrency"
+
+    # Leg and NewOrder constructors (just pass through)
+    order_mod.Leg = MagicMock()
+    order_mod.NewOrder = MagicMock()
+
+    return order_mod
+
+
+def _make_mock_placed_order_response(order_id: int = 12345) -> MagicMock:
+    """Create a mock PlacedOrderResponse."""
+    response = MagicMock()
+    response.order.id = order_id
+    return response
+
+
+def _setup_connected_adapter(
+    event_bus: EventBus,
+    *,
+    order_response: MagicMock | None = None,
+    place_order_error: Exception | None = None,
+    delete_order_error: Exception | None = None,
+) -> tuple[TastytradeAdapter, MagicMock, MagicMock]:
+    """Set up a TastytradeAdapter that appears connected with mocked internals.
+
+    Returns:
+        Tuple of (adapter, mock_session, mock_account).
+    """
+    mock_session = MagicMock()
+    mock_account = _make_mock_account()
+
+    if order_response is not None:
+        mock_account.place_order.return_value = order_response
+    else:
+        mock_account.place_order.return_value = _make_mock_placed_order_response()
+
+    if place_order_error:
+        mock_account.place_order.side_effect = place_order_error
+
+    if delete_order_error:
+        mock_account.delete_order.side_effect = delete_order_error
+
+    adapter = TastytradeAdapter(
+        bus=event_bus, login="user", password="pass"
+    )
+    adapter._session = mock_session
+    adapter._account = mock_account
+
+    return adapter, mock_session, mock_account
+
+
+# ---------------------------------------------------------------------------
+# Submit order tests
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitOrder:
+    """Test order submission."""
+
+    @pytest.mark.asyncio
+    async def test_submit_market_order(self, event_bus: EventBus) -> None:
+        """submit_order should call place_order and emit OrderAccepted."""
+        import asyncio
+
+        accepted_events: list[OrderAccepted] = []
+
+        async def capture(event: OrderAccepted) -> None:
+            accepted_events.append(event)
+
+        event_bus.subscribe(OrderAccepted, capture)
+        await event_bus.start()
+
+        order_mod = _make_mock_order_module()
+
+        with patch.dict(
+            "sys.modules", {"tastytrade.order": order_mod}
+        ):
+            adapter, mock_session, mock_account = _setup_connected_adapter(
+                event_bus,
+                order_response=_make_mock_placed_order_response(order_id=42),
+            )
+            order = _make_order(
+                side=Side.BUY, order_type=OrderType.MARKET, quantity=Decimal("100")
+            )
+            venue_order_id = await adapter.submit_order(order)
+
+        await asyncio.sleep(0.05)
+        await event_bus.stop()
+
+        assert venue_order_id == "42"
+        mock_account.place_order.assert_called_once()
+        assert len(accepted_events) == 1
+        assert accepted_events[0].venue_order_id == "42"
+        assert accepted_events[0].order_id == order.order_id
+
+    @pytest.mark.asyncio
+    async def test_submit_limit_order_with_price(self, event_bus: EventBus) -> None:
+        """submit_order for LIMIT should pass price to NewOrder."""
+        import asyncio
+
+        order_mod = _make_mock_order_module()
+
+        with patch.dict("sys.modules", {"tastytrade.order": order_mod}):
+            adapter, _, mock_account = _setup_connected_adapter(event_bus)
+
+            await event_bus.start()
+            order = _make_order(
+                side=Side.BUY,
+                order_type=OrderType.LIMIT,
+                quantity=Decimal("50"),
+                price=Decimal("150.50"),
+            )
+            await adapter.submit_order(order)
+            await asyncio.sleep(0.05)
+            await event_bus.stop()
+
+        # Verify place_order was called
+        mock_account.place_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_submit_sell_order_uses_sell_to_close(
+        self, event_bus: EventBus
+    ) -> None:
+        """submit_order with Side.SELL should use SELL_TO_CLOSE action."""
+        import asyncio
+
+        order_mod = _make_mock_order_module()
+
+        with patch.dict("sys.modules", {"tastytrade.order": order_mod}):
+            adapter, _, mock_account = _setup_connected_adapter(event_bus)
+
+            await event_bus.start()
+            order = _make_order(side=Side.SELL, order_type=OrderType.MARKET)
+            await adapter.submit_order(order)
+            await asyncio.sleep(0.05)
+            await event_bus.stop()
+
+        mock_account.place_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_submit_order_not_connected_raises(self, event_bus: EventBus) -> None:
+        """submit_order should raise VenueError when not connected."""
+        adapter = TastytradeAdapter(
+            bus=event_bus, login="user", password="pass"
+        )
+        with pytest.raises(VenueError, match="Not connected"):
+            await adapter.submit_order(_make_order())
+
+    @pytest.mark.asyncio
+    async def test_submit_order_api_error(self, event_bus: EventBus) -> None:
+        """submit_order should wrap API errors via _wrap_tt_error."""
+        import asyncio
+
+        order_mod = _make_mock_order_module()
+
+        with patch.dict("sys.modules", {"tastytrade.order": order_mod}):
+            adapter, _, _ = _setup_connected_adapter(
+                event_bus,
+                place_order_error=RuntimeError("API failure"),
+            )
+            await event_bus.start()
+
+            with pytest.raises(VenueError, match="API failure"):
+                await adapter.submit_order(_make_order())
+
+            await asyncio.sleep(0.05)
+            await event_bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# Cancel order tests
+# ---------------------------------------------------------------------------
+
+
+class TestCancelOrder:
+    """Test order cancellation."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_order(self, event_bus: EventBus) -> None:
+        """cancel_order should call delete_order and emit OrderCancelled."""
+        import asyncio
+
+        cancelled_events: list[OrderCancelled] = []
+
+        async def capture(event: OrderCancelled) -> None:
+            cancelled_events.append(event)
+
+        event_bus.subscribe(OrderCancelled, capture)
+        await event_bus.start()
+
+        adapter, mock_session, mock_account = _setup_connected_adapter(event_bus)
+        instrument = _make_equity_instrument()
+
+        await adapter.cancel_order("12345", instrument)
+
+        await asyncio.sleep(0.05)
+        await event_bus.stop()
+
+        mock_account.delete_order.assert_called_once_with(mock_session, 12345)
+        assert len(cancelled_events) == 1
+        assert cancelled_events[0].reason == "Cancelled via tastytrade"
+        assert cancelled_events[0].order_id == "12345"
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_not_connected_raises(self, event_bus: EventBus) -> None:
+        """cancel_order should raise VenueError when not connected."""
+        adapter = TastytradeAdapter(
+            bus=event_bus, login="user", password="pass"
+        )
+        with pytest.raises(VenueError, match="Not connected"):
+            await adapter.cancel_order("999", _make_equity_instrument())
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_api_error(self, event_bus: EventBus) -> None:
+        """cancel_order should wrap API errors via _wrap_tt_error."""
+        import asyncio
+
+        adapter, _, _ = _setup_connected_adapter(
+            event_bus,
+            delete_order_error=RuntimeError("Order not found"),
+        )
+        await event_bus.start()
+
+        with pytest.raises(VenueError, match="Order not found"):
+            await adapter.cancel_order("999", _make_equity_instrument())
+
+        await asyncio.sleep(0.05)
+        await event_bus.stop()

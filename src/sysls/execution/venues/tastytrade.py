@@ -193,6 +193,9 @@ class TastytradeAdapter(VenueAdapter):
     async def submit_order(self, order: OrderRequest) -> str:
         """Submit an order to tastytrade.
 
+        Builds a tastytrade NewOrder with a Leg from the order request
+        and submits it via the account API.
+
         Args:
             order: Normalized order request.
 
@@ -203,7 +206,91 @@ class TastytradeAdapter(VenueAdapter):
             OrderError: If the order cannot be submitted.
             VenueError: If there is a connectivity issue.
         """
-        raise NotImplementedError
+        from decimal import Decimal as Dec
+
+        session = self._require_session()
+
+        try:
+            from tastytrade.order import (
+                InstrumentType,
+                Leg,
+                NewOrder,
+                OrderAction,
+                OrderTimeInForce,
+                OrderType as TtOrderType,
+            )
+        except ImportError as exc:
+            raise VenueError(
+                f"Failed to import tastytrade order types: {exc}",
+                venue=self.name,
+            ) from exc
+
+        # Map sysls Side to tastytrade OrderAction
+        if order.side == Side.BUY:
+            action = OrderAction.BUY_TO_OPEN
+        else:
+            action = OrderAction.SELL_TO_CLOSE
+
+        # Map sysls OrderType to tastytrade OrderType
+        tt_order_type = _map_sysls_order_type(order.order_type)
+
+        # Map instrument asset class to tastytrade InstrumentType
+        tt_instrument_type = _map_asset_class_to_instrument_type(
+            order.instrument.asset_class
+        )
+
+        leg = Leg(
+            instrument_type=tt_instrument_type,
+            symbol=order.instrument.symbol,
+            action=action,
+            quantity=int(order.quantity),
+        )
+
+        # Build the NewOrder
+        tt_tif = _map_time_in_force(order.time_in_force)
+
+        new_order = NewOrder(
+            time_in_force=tt_tif,
+            order_type=tt_order_type,
+            legs=[leg],
+            price=Dec(str(order.price)) if order.price is not None else None,
+            stop_trigger=Dec(str(order.stop_price)) if order.stop_price is not None else None,
+        )
+
+        self._logger.info(
+            "tastytrade_order_submitting",
+            symbol=order.instrument.symbol,
+            side=order.side.value,
+            order_type=order.order_type.value,
+            quantity=str(order.quantity),
+        )
+
+        try:
+            response = self._account.place_order(session, new_order, dry_run=False)
+        except Exception as exc:
+            self._wrap_tt_error(
+                exc, context=f"submit_order for {order.instrument.symbol}"
+            )
+
+        # Extract venue order ID from response
+        venue_order_id = str(response.order.id)
+
+        self._logger.info(
+            "tastytrade_order_submitted",
+            order_id=order.order_id,
+            venue_order_id=venue_order_id,
+        )
+
+        await self._bus.publish(
+            OrderAccepted(
+                order_id=order.order_id,
+                instrument=order.instrument,
+                venue_order_id=venue_order_id,
+                source=self.name,
+            )
+        )
+
+        return venue_order_id
 
     async def cancel_order(self, venue_order_id: str, instrument: Instrument) -> None:
         """Cancel an order on tastytrade.
@@ -215,7 +302,33 @@ class TastytradeAdapter(VenueAdapter):
         Raises:
             OrderError: If the order cannot be cancelled.
         """
-        raise NotImplementedError
+        session = self._require_session()
+
+        self._logger.info(
+            "tastytrade_order_cancelling",
+            venue_order_id=venue_order_id,
+        )
+
+        try:
+            self._account.delete_order(session, int(venue_order_id))
+        except Exception as exc:
+            self._wrap_tt_error(
+                exc, context=f"cancel_order {venue_order_id}"
+            )
+
+        self._logger.info(
+            "tastytrade_order_cancelled",
+            venue_order_id=venue_order_id,
+        )
+
+        await self._bus.publish(
+            OrderCancelled(
+                order_id=venue_order_id,
+                instrument=instrument,
+                reason="Cancelled via tastytrade",
+                source=self.name,
+            )
+        )
 
     async def get_order_status(
         self, venue_order_id: str, instrument: Instrument
@@ -278,6 +391,12 @@ class TastytradeAdapter(VenueAdapter):
     def _wrap_tt_error(self, exc: Exception, context: str) -> None:
         """Wrap a tastytrade exception in a sysls exception and re-raise.
 
+        Maps tastytrade SDK exceptions to appropriate sysls exception types:
+        - ``TastytradeError`` with auth-related messages -> ``SyslsConnectionError``
+        - ``TastytradeError`` with order-related messages -> ``OrderError``
+        - ``ConnectionError`` / ``TimeoutError`` -> ``SyslsConnectionError``
+        - Other exceptions -> ``VenueError``
+
         Args:
             exc: The exception to wrap.
             context: Description of the operation that failed.
@@ -287,7 +406,119 @@ class TastytradeAdapter(VenueAdapter):
             SyslsConnectionError: For authentication/connection errors.
             VenueError: For other errors.
         """
-        raise NotImplementedError
+        self._logger.error(
+            "tastytrade_error",
+            context=context,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+        # Check for TastytradeError by class name to avoid import at module level
+        exc_type_name = type(exc).__name__
+
+        if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
+            raise SyslsConnectionError(
+                f"{context}: {exc}",
+                venue=self.name,
+            ) from exc
+
+        if exc_type_name == "TastytradeError":
+            msg = str(exc).lower()
+            if any(kw in msg for kw in ("auth", "login", "session", "token", "credential")):
+                raise SyslsConnectionError(
+                    f"{context}: {exc}",
+                    venue=self.name,
+                ) from exc
+            if any(kw in msg for kw in ("order", "quantity", "price", "leg", "symbol")):
+                raise OrderError(
+                    f"{context}: {exc}",
+                    venue=self.name,
+                ) from exc
+            raise VenueError(
+                f"{context}: {exc}",
+                venue=self.name,
+            ) from exc
+
+        if isinstance(exc, ValueError):
+            raise OrderError(
+                f"{context}: {exc}",
+                venue=self.name,
+            ) from exc
+
+        raise VenueError(
+            f"{context}: {exc}",
+            venue=self.name,
+        ) from exc
+
+
+def _map_sysls_order_type(order_type: OrderType) -> Any:
+    """Map a sysls OrderType to a tastytrade OrderType enum value.
+
+    Args:
+        order_type: The sysls order type.
+
+    Returns:
+        The corresponding tastytrade OrderType.
+
+    Raises:
+        OrderError: If the order type is not supported.
+    """
+    from tastytrade.order import OrderType as TtOrderType
+
+    mapping = {
+        OrderType.MARKET: TtOrderType.MARKET,
+        OrderType.LIMIT: TtOrderType.LIMIT,
+        OrderType.STOP: TtOrderType.STOP,
+        OrderType.STOP_LIMIT: TtOrderType.STOP_LIMIT,
+    }
+    tt_type = mapping.get(order_type)
+    if tt_type is None:
+        raise OrderError(
+            f"Unsupported order type for tastytrade: {order_type}",
+            venue="tastytrade",
+        )
+    return tt_type
+
+
+def _map_time_in_force(tif: Any) -> Any:
+    """Map a sysls TimeInForce to a tastytrade OrderTimeInForce enum value.
+
+    Args:
+        tif: The sysls TimeInForce value.
+
+    Returns:
+        The corresponding tastytrade OrderTimeInForce.
+    """
+    from sysls.core.types import TimeInForce
+    from tastytrade.order import OrderTimeInForce
+
+    mapping = {
+        TimeInForce.GTC: OrderTimeInForce.GTC,
+        TimeInForce.DAY: OrderTimeInForce.DAY,
+        TimeInForce.IOC: OrderTimeInForce.IOC,
+        TimeInForce.GTD: OrderTimeInForce.GTD,
+    }
+    return mapping.get(tif, OrderTimeInForce.DAY)
+
+
+def _map_asset_class_to_instrument_type(asset_class: AssetClass) -> Any:
+    """Map a sysls AssetClass to a tastytrade InstrumentType.
+
+    Args:
+        asset_class: The sysls asset class.
+
+    Returns:
+        The corresponding tastytrade InstrumentType.
+    """
+    from tastytrade.order import InstrumentType
+
+    mapping = {
+        AssetClass.EQUITY: InstrumentType.EQUITY,
+        AssetClass.OPTION: InstrumentType.EQUITY_OPTION,
+        AssetClass.FUTURE: InstrumentType.FUTURE,
+        AssetClass.CRYPTO_SPOT: InstrumentType.CRYPTOCURRENCY,
+    }
+    return mapping.get(asset_class, InstrumentType.EQUITY)
 
 
 def _map_tt_status(tt_status: str) -> OrderStatus:
