@@ -607,6 +607,36 @@ class TestCommission:
         # Commission = 0.001 * 100 * 10 = 1.0
         assert result["trades"][0]["commission"] == pytest.approx(1.0)
 
+    @pytest.mark.asyncio
+    async def test_commission_reduces_equity(self) -> None:
+        """Non-zero commission rate reduces final equity vs zero commission.
+
+        The equity curve should reflect commission drag, not just
+        record commissions in the trade log.
+        """
+        inst = _make_instrument()
+        df = _make_bar_df([100.0, 101.0, 102.0])
+
+        engine_no_comm = ReplayEngine(
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+        )
+        result_no_comm = await engine_no_comm.run(strategy_cls=BuyOnceStrategy, data={inst: df})
+
+        engine_with_comm = ReplayEngine(
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0.01"),
+        )
+        result_with_comm = await engine_with_comm.run(
+            strategy_cls=BuyOnceStrategy, data={inst: df}
+        )
+
+        # Commission = 0.01 * 100 * 10 = 10.0, so equity should be $10 less
+        assert result_with_comm["final_equity"] < result_no_comm["final_equity"]
+        expected_diff = 0.01 * 100.0 * 10.0  # 10.0
+        actual_diff = result_no_comm["final_equity"] - result_with_comm["final_equity"]
+        assert actual_diff == pytest.approx(expected_diff)
+
 
 # ---------------------------------------------------------------------------
 # Tests: Equity curve computation

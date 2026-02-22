@@ -478,7 +478,7 @@ def summarize_backtest(
             annualized_volatility(rets, periods_per_year=periods_per_year)
         ),
         win_rate=_safe_float(win_rate(pnl_arr)),
-        profit_factor=_safe_float(profit_factor(pnl_arr)),
+        profit_factor=profit_factor(pnl_arr),
         total_trades=len(trades),
         initial_capital=initial_capital,
         final_equity=float(equity_arr[-1]) if equity_arr.size > 0 else initial_capital,

@@ -81,6 +81,7 @@ class ReplayEngine:
     ) -> None:
         self._initial_capital = initial_capital
         self._commission_rate = commission_rate
+        self._total_commissions = Decimal("0")
 
     async def run(
         self,
@@ -118,6 +119,8 @@ class ReplayEngine:
         Raises:
             ValueError: If *data* is empty or *data_type* is unsupported.
         """
+        self._total_commissions = Decimal("0")
+
         if not data:
             raise ValueError("data must contain at least one instrument DataFrame")
         if data_type not in ("bar", "trade"):
@@ -179,10 +182,11 @@ class ReplayEngine:
 
         # Trade logger: record every fill for the trade log.
         async def _record_fill(event: FillEvent) -> None:
-            """Record fill details for the trade log."""
+            """Record fill details and accumulate commission costs."""
             commission = Decimal("0")
             if self._commission_rate > 0:
                 commission = event.fill_price * event.fill_quantity * self._commission_rate
+                self._total_commissions += commission
             trade_log.append(
                 {
                     "timestamp": clock.now(),
@@ -336,5 +340,7 @@ class ReplayEngine:
                         )
                     total_unrealized += unrealized
 
-        equity = self._initial_capital + total_realized + total_unrealized
+        equity = (
+            self._initial_capital + total_realized + total_unrealized - self._total_commissions
+        )
         return float(equity)

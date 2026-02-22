@@ -608,6 +608,61 @@ class TestSummarizeBacktest:
         assert result.max_drawdown == 0.0
         assert result.final_equity == 100_000.0
 
+    def test_profit_factor_inf_preserved_for_all_winners(self) -> None:
+        """profit_factor is inf when all trades are winners, not clamped to 0.0.
+
+        The BacktestResult model uses ``ConfigDict(ser_json_inf_nan="constants")``
+        so ``float('inf')`` is valid and should not be sanitized away.
+        """
+        equity = np.array([100_000.0, 101_000.0, 102_000.0])
+        trades = [
+            TradeRecord(
+                instrument="SPY",
+                side=Side.BUY,
+                entry_price=400.0,
+                exit_price=410.0,
+                quantity=5.0,
+                pnl=50.0,
+                entry_index=0,
+                exit_index=1,
+            ),
+            TradeRecord(
+                instrument="SPY",
+                side=Side.BUY,
+                entry_price=410.0,
+                exit_price=420.0,
+                quantity=5.0,
+                pnl=50.0,
+                entry_index=1,
+                exit_index=2,
+            ),
+        ]
+        result = summarize_backtest(equity, trades, initial_capital=100_000.0)
+
+        assert result.profit_factor == float("inf"), (
+            "profit_factor should be inf when there are no losing trades"
+        )
+
+    def test_profit_factor_inf_serialization_round_trip(self) -> None:
+        """profit_factor=inf survives JSON serialization round-trip."""
+        equity = np.array([100_000.0, 101_000.0])
+        trades = [
+            TradeRecord(
+                instrument="SPY",
+                side=Side.BUY,
+                entry_price=400.0,
+                exit_price=410.0,
+                quantity=5.0,
+                pnl=50.0,
+                entry_index=0,
+                exit_index=1,
+            ),
+        ]
+        result = summarize_backtest(equity, trades, initial_capital=100_000.0)
+        json_str = result.model_dump_json()
+        restored = BacktestResult.model_validate_json(json_str)
+        assert restored.profit_factor == float("inf")
+
     def test_serialization_round_trip(self) -> None:
         """BacktestResult can be serialized to JSON and back."""
         equity = np.array([100_000.0, 101_000.0])
