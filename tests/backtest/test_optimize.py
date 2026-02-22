@@ -313,21 +313,87 @@ class TestTimeSeriesSplit:
 
     def test_basic_splits(self) -> None:
         """Splits generate correct expanding windows."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        splitter = TimeSeriesSplit(n_samples=100, n_splits=3, train_ratio=0.7)
+        splits = list(splitter)
+        assert len(splits) == 3
+
+        # Each split is a 4-tuple of ints
+        for train_start, train_end, oos_start, oos_end in splits:
+            assert isinstance(train_start, int)
+            assert isinstance(train_end, int)
+            assert isinstance(oos_start, int)
+            assert isinstance(oos_end, int)
 
     def test_expanding_window(self) -> None:
         """Training window starts at 0 and grows each split."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        splitter = TimeSeriesSplit(n_samples=100, n_splits=3, train_ratio=0.7)
+        splits = list(splitter)
+
+        # All training windows start at 0
+        for train_start, _, _, _ in splits:
+            assert train_start == 0
+
+        # Training end grows monotonically
+        train_ends = [te for _, te, _, _ in splits]
+        for i in range(len(train_ends) - 1):
+            assert train_ends[i] < train_ends[i + 1]
 
     def test_no_overlap(self) -> None:
         """Training and OOS windows do not overlap."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        splitter = TimeSeriesSplit(n_samples=100, n_splits=3, train_ratio=0.7)
+        for _, train_end, oos_start, _ in splitter:
+            assert train_end == oos_start  # contiguous, no gap/overlap
 
     def test_length(self) -> None:
         """__len__ returns the configured number of splits."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        splitter = TimeSeriesSplit(n_samples=100, n_splits=5, train_ratio=0.5)
+        assert len(splitter) == 5
 
     def test_single_split(self) -> None:
         """A single split covers training + OOS correctly."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        splitter = TimeSeriesSplit(n_samples=100, n_splits=1, train_ratio=0.7)
+        splits = list(splitter)
+        assert len(splits) == 1
+
+        train_start, train_end, oos_start, oos_end = splits[0]
+        assert train_start == 0
+        assert train_end == 70
+        assert oos_start == 70
+        assert oos_end == 100
 
     def test_coverage(self) -> None:
-        """All splits together cover the data without gaps."""
+        """Last split's OOS extends to the end of the data."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        splitter = TimeSeriesSplit(n_samples=100, n_splits=3, train_ratio=0.7)
+        splits = list(splitter)
+
+        # Last split's OOS end must be n_samples
+        _, _, _, last_oos_end = splits[-1]
+        assert last_oos_end == 100
+
+        # OOS windows are contiguous across splits
+        for i in range(len(splits) - 1):
+            _, _, _, oos_end_i = splits[i]
+            _, _, oos_start_next, _ = splits[i + 1]
+            assert oos_end_i == oos_start_next
+
+    def test_too_short_data_raises(self) -> None:
+        """Data too short for requested splits raises ValueError."""
+        from sysls.backtest.optimize import TimeSeriesSplit
+
+        with pytest.raises(ValueError, match="Data too short"):
+            TimeSeriesSplit(n_samples=10, n_splits=10, train_ratio=0.9)
 
 
 # ---------------------------------------------------------------------------

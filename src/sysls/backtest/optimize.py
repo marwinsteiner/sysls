@@ -264,17 +264,46 @@ class TimeSeriesSplit:
         n_splits: int,
         train_ratio: float = 0.7,
     ) -> None:
-        raise NotImplementedError
+        if n_splits < 1:
+            raise ValueError(f"n_splits must be >= 1, got {n_splits}")
+        if not 0.0 < train_ratio < 1.0:
+            raise ValueError(f"train_ratio must be in (0, 1), got {train_ratio}")
+        self._n_samples = n_samples
+        self._n_splits = n_splits
+        self._train_ratio = train_ratio
+
+        # First train window ends at train_ratio of total data.
+        # Remaining data is divided into n_splits equal OOS segments.
+        self._first_train_end = int(n_samples * train_ratio)
+        remaining = n_samples - self._first_train_end
+        self._oos_step = remaining // n_splits
+
+        if self._oos_step < 1:
+            raise ValueError(
+                f"Data too short for {n_splits} splits with "
+                f"train_ratio={train_ratio}. Need at least "
+                f"{self._first_train_end + n_splits} samples, got {n_samples}."
+            )
 
     def __iter__(
         self,
     ) -> Iterator[tuple[int, int, int, int]]:
         """Yield ``(train_start, train_end, oos_start, oos_end)`` tuples."""
-        raise NotImplementedError
+        for i in range(self._n_splits):
+            train_start = 0
+            train_end = self._first_train_end + i * self._oos_step
+            oos_start = train_end
+            # Last split absorbs any remainder from integer division.
+            oos_end = (
+                self._n_samples
+                if i == self._n_splits - 1
+                else oos_start + self._oos_step
+            )
+            yield (train_start, train_end, oos_start, oos_end)
 
     def __len__(self) -> int:
         """Return the number of splits."""
-        raise NotImplementedError
+        return self._n_splits
 
 
 # ---------------------------------------------------------------------------
