@@ -12,7 +12,7 @@ import pytest
 
 from sysls.core.bus import EventBus
 from sysls.core.exceptions import ConnectionError as SyslsConnectionError
-from sysls.core.exceptions import VenueError
+from sysls.core.exceptions import OrderError, VenueError
 from sysls.core.types import (
     AssetClass,
     Instrument,
@@ -23,7 +23,7 @@ from sysls.core.types import (
     TimeInForce,
     Venue,
 )
-from sysls.execution.venues.ibkr import IbkrAdapter, _map_ib_status
+from sysls.execution.venues.ibkr import IbkrAdapter, _map_ib_status, _to_ib_contract, _to_ib_order
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -280,3 +280,222 @@ async def test_context_manager(event_bus: EventBus) -> None:
 
         mock_ib.disconnect.assert_called_once()
         assert not adapter.is_connected
+
+
+# ---------------------------------------------------------------------------
+# Contract building tests
+# ---------------------------------------------------------------------------
+
+
+def test_to_ib_contract_equity() -> None:
+    """Equity instrument should produce a Stock contract."""
+    from ib_async import Stock
+
+    instrument = _make_equity_instrument(symbol="AAPL")
+    contract = _to_ib_contract(instrument)
+    assert isinstance(contract, Stock)
+    assert contract.symbol == "AAPL"
+    assert contract.exchange == "SMART"
+    assert contract.currency == "USD"
+
+
+def test_to_ib_contract_equity_with_exchange() -> None:
+    """Equity with explicit exchange should use that exchange."""
+    from ib_async import Stock
+
+    instrument = Instrument(
+        symbol="AAPL",
+        asset_class=AssetClass.EQUITY,
+        venue=Venue.IBKR,
+        exchange="NYSE",
+        currency="USD",
+    )
+    contract = _to_ib_contract(instrument)
+    assert isinstance(contract, Stock)
+    assert contract.exchange == "NYSE"
+
+
+def test_to_ib_contract_option_parsed() -> None:
+    """Option with space-separated details should be parsed correctly."""
+    from ib_async import Option
+
+    instrument = Instrument(
+        symbol="AAPL 20240315 150 C",
+        asset_class=AssetClass.OPTION,
+        venue=Venue.IBKR,
+        currency="USD",
+    )
+    contract = _to_ib_contract(instrument)
+    assert isinstance(contract, Option)
+    assert contract.symbol == "AAPL"
+    assert contract.lastTradeDateOrContractMonth == "20240315"
+    assert contract.strike == 150.0
+    assert contract.right == "C"
+
+
+def test_to_ib_contract_option_put() -> None:
+    """Put option should set right to 'P'."""
+    from ib_async import Option
+
+    instrument = Instrument(
+        symbol="SPY 20240621 500 P",
+        asset_class=AssetClass.OPTION,
+        venue=Venue.IBKR,
+        currency="USD",
+    )
+    contract = _to_ib_contract(instrument)
+    assert isinstance(contract, Option)
+    assert contract.right == "P"
+    assert contract.strike == 500.0
+
+
+def test_to_ib_contract_future() -> None:
+    """Future instrument should produce a Future contract."""
+    from ib_async import Future
+
+    instrument = Instrument(
+        symbol="ES",
+        asset_class=AssetClass.FUTURE,
+        venue=Venue.IBKR,
+        exchange="CME",
+        currency="USD",
+    )
+    contract = _to_ib_contract(instrument)
+    assert isinstance(contract, Future)
+    assert contract.symbol == "ES"
+    assert contract.exchange == "CME"
+
+
+def test_to_ib_contract_forex() -> None:
+    """Crypto spot instrument should produce a Forex contract."""
+    from ib_async import Forex
+
+    instrument = Instrument(
+        symbol="EUR",
+        asset_class=AssetClass.CRYPTO_SPOT,
+        venue=Venue.IBKR,
+        currency="USD",
+    )
+    contract = _to_ib_contract(instrument)
+    assert isinstance(contract, Forex)
+    assert contract.symbol == "EUR"
+    assert contract.currency == "USD"
+    assert contract.exchange == "IDEALPRO"
+
+
+def test_to_ib_contract_unsupported_raises() -> None:
+    """Unsupported asset class should raise OrderError."""
+    instrument = Instrument(
+        symbol="SOME_EVENT",
+        asset_class=AssetClass.EVENT,
+        venue=Venue.IBKR,
+        currency="USD",
+    )
+    with pytest.raises(OrderError, match="Unsupported asset class"):
+        _to_ib_contract(instrument)
+
+
+# ---------------------------------------------------------------------------
+# Order building tests
+# ---------------------------------------------------------------------------
+
+
+def test_to_ib_order_market_buy() -> None:
+    """Market buy should produce a MarketOrder with action BUY."""
+    from ib_async import MarketOrder
+
+    order = _make_order(side=Side.BUY, order_type=OrderType.MARKET, quantity=Decimal("100"))
+    ib_order = _to_ib_order(order)
+    assert isinstance(ib_order, MarketOrder)
+    assert ib_order.action == "BUY"
+    assert ib_order.totalQuantity == 100.0
+
+
+def test_to_ib_order_market_sell() -> None:
+    """Market sell should produce a MarketOrder with action SELL."""
+    from ib_async import MarketOrder
+
+    order = _make_order(side=Side.SELL, order_type=OrderType.MARKET, quantity=Decimal("50"))
+    ib_order = _to_ib_order(order)
+    assert isinstance(ib_order, MarketOrder)
+    assert ib_order.action == "SELL"
+    assert ib_order.totalQuantity == 50.0
+
+
+def test_to_ib_order_limit() -> None:
+    """Limit order should produce a LimitOrder with correct price."""
+    from ib_async import LimitOrder
+
+    order = _make_order(
+        side=Side.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("200"),
+        price=Decimal("150.50"),
+    )
+    ib_order = _to_ib_order(order)
+    assert isinstance(ib_order, LimitOrder)
+    assert ib_order.action == "BUY"
+    assert ib_order.totalQuantity == 200.0
+    assert ib_order.lmtPrice == 150.50
+
+
+def test_to_ib_order_limit_no_price_raises() -> None:
+    """Limit order without price should raise OrderError."""
+    order = _make_order(side=Side.BUY, order_type=OrderType.LIMIT, price=None)
+    with pytest.raises(OrderError, match="Limit order requires a price"):
+        _to_ib_order(order)
+
+
+def test_to_ib_order_stop() -> None:
+    """Stop order should produce a StopOrder with correct stop price."""
+    from ib_async import StopOrder
+
+    order = _make_order(
+        side=Side.SELL,
+        order_type=OrderType.STOP,
+        quantity=Decimal("75"),
+        stop_price=Decimal("140.00"),
+    )
+    ib_order = _to_ib_order(order)
+    assert isinstance(ib_order, StopOrder)
+    assert ib_order.action == "SELL"
+    assert ib_order.totalQuantity == 75.0
+    assert ib_order.auxPrice == 140.00
+
+
+def test_to_ib_order_stop_no_stop_price_raises() -> None:
+    """Stop order without stop_price should raise OrderError."""
+    order = _make_order(side=Side.SELL, order_type=OrderType.STOP, stop_price=None)
+    with pytest.raises(OrderError, match="Stop order requires a stop_price"):
+        _to_ib_order(order)
+
+
+def test_to_ib_order_stop_limit() -> None:
+    """Stop-limit order should produce a StopLimitOrder."""
+    from ib_async import StopLimitOrder
+
+    order = _make_order(
+        side=Side.BUY,
+        order_type=OrderType.STOP_LIMIT,
+        quantity=Decimal("30"),
+        price=Decimal("155.00"),
+        stop_price=Decimal("153.00"),
+    )
+    ib_order = _to_ib_order(order)
+    assert isinstance(ib_order, StopLimitOrder)
+    assert ib_order.action == "BUY"
+    assert ib_order.totalQuantity == 30.0
+    assert ib_order.lmtPrice == 155.00
+    assert ib_order.auxPrice == 153.00
+
+
+def test_to_ib_order_stop_limit_missing_prices_raises() -> None:
+    """Stop-limit order missing price or stop_price should raise OrderError."""
+    order = _make_order(
+        side=Side.BUY,
+        order_type=OrderType.STOP_LIMIT,
+        price=Decimal("155.00"),
+        stop_price=None,
+    )
+    with pytest.raises(OrderError, match="Stop-limit order requires both"):
+        _to_ib_order(order)

@@ -13,11 +13,13 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from sysls.core.exceptions import ConnectionError as SyslsConnectionError
-from sysls.core.exceptions import VenueError
+from sysls.core.exceptions import OrderError, VenueError
 from sysls.core.types import (
+    AssetClass,
     Instrument,
     OrderStatus,
     OrderType,
+    Side,
 )
 from sysls.execution.venues.base import VenueAdapter
 
@@ -244,7 +246,41 @@ def _to_ib_contract(instrument: Instrument) -> Any:
     Raises:
         OrderError: If the asset class is not supported.
     """
-    raise NotImplementedError
+    from ib_async import Forex, Future, Option, Stock
+
+    exchange = instrument.exchange or "SMART"
+    currency = instrument.currency
+
+    if instrument.asset_class == AssetClass.EQUITY:
+        return Stock(instrument.symbol, exchange, currency)
+
+    if instrument.asset_class == AssetClass.OPTION:
+        # Symbol format expected: "AAPL 20240315 150 C" or similar
+        # Parse option details from symbol metadata
+        parts = instrument.symbol.split()
+        if len(parts) >= 4:
+            underlying = parts[0]
+            expiry = parts[1]
+            strike = float(parts[2])
+            right = parts[3]  # "C" or "P"
+            return Option(underlying, expiry, strike, right, exchange, currency)
+        # Fallback: treat as plain symbol
+        return Option(instrument.symbol, exchange=exchange, currency=currency)
+
+    if instrument.asset_class == AssetClass.FUTURE:
+        return Future(instrument.symbol, exchange=exchange, currency=currency)
+
+    if instrument.asset_class == AssetClass.CRYPTO_SPOT:
+        return Forex(
+            symbol=instrument.symbol,
+            currency=currency,
+            exchange=exchange if exchange != "SMART" else "IDEALPRO",
+        )
+
+    raise OrderError(
+        f"Unsupported asset class for IBKR: {instrument.asset_class}",
+        venue="ibkr",
+    )
 
 
 def _to_ib_order(request: OrderRequest) -> Any:
@@ -259,7 +295,42 @@ def _to_ib_order(request: OrderRequest) -> Any:
     Raises:
         OrderError: If the order type is not supported.
     """
-    raise NotImplementedError
+    from ib_async import LimitOrder, MarketOrder, StopLimitOrder, StopOrder
+
+    action = "BUY" if request.side == Side.BUY else "SELL"
+    qty = float(request.quantity)
+
+    if request.order_type == OrderType.MARKET:
+        return MarketOrder(action, qty)
+
+    if request.order_type == OrderType.LIMIT:
+        if request.price is None:
+            raise OrderError(
+                "Limit order requires a price",
+                venue="ibkr",
+            )
+        return LimitOrder(action, qty, float(request.price))
+
+    if request.order_type == OrderType.STOP:
+        if request.stop_price is None:
+            raise OrderError(
+                "Stop order requires a stop_price",
+                venue="ibkr",
+            )
+        return StopOrder(action, qty, float(request.stop_price))
+
+    if request.order_type == OrderType.STOP_LIMIT:
+        if request.price is None or request.stop_price is None:
+            raise OrderError(
+                "Stop-limit order requires both price and stop_price",
+                venue="ibkr",
+            )
+        return StopLimitOrder(action, qty, float(request.price), float(request.stop_price))
+
+    raise OrderError(
+        f"Unsupported order type for IBKR: {request.order_type}",
+        venue="ibkr",
+    )
 
 
 def _map_ib_status(ib_status: str) -> OrderStatus:
