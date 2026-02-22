@@ -341,8 +341,27 @@ class TastytradeAdapter(VenueAdapter):
 
         Returns:
             Current order status mapped to sysls OrderStatus.
+
+        Raises:
+            OrderError: If the order cannot be fetched.
+            VenueError: If there is a connectivity issue.
         """
-        raise NotImplementedError
+        session = self._require_session()
+
+        try:
+            placed_order = self._account.get_order(session, int(venue_order_id))
+        except Exception as exc:
+            self._wrap_tt_error(
+                exc, context=f"get_order_status {venue_order_id}"
+            )
+
+        status_str = getattr(placed_order, "status", None)
+        if status_str is None:
+            return OrderStatus.PENDING
+
+        # The status may be an enum with a .value or a plain string
+        status_value = getattr(status_str, "value", str(status_str))
+        return _map_tt_status(status_value)
 
     # -- Position / balance queries ----------------------------------------
 

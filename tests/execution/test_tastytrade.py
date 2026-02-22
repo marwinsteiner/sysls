@@ -702,3 +702,109 @@ class TestCancelOrder:
 
         await asyncio.sleep(0.05)
         await event_bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# Get order status tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_placed_order(status: str = "Live") -> MagicMock:
+    """Create a mock PlacedOrder with a given status.
+
+    Args:
+        status: The status string value.
+
+    Returns:
+        Mock PlacedOrder.
+    """
+    order = MagicMock()
+    # Simulate enum-like status with .value attribute
+    order.status.value = status
+    return order
+
+
+class TestGetOrderStatus:
+    """Test order status querying."""
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_live(self, event_bus: EventBus) -> None:
+        """get_order_status should return ACCEPTED for 'Live' status."""
+        adapter, mock_session, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_order.return_value = _make_mock_placed_order("Live")
+
+        status = await adapter.get_order_status("42", _make_equity_instrument())
+
+        assert status == OrderStatus.ACCEPTED
+        mock_account.get_order.assert_called_once_with(mock_session, 42)
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_filled(self, event_bus: EventBus) -> None:
+        """get_order_status should return FILLED for 'Filled' status."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_order.return_value = _make_mock_placed_order("Filled")
+
+        status = await adapter.get_order_status("99", _make_equity_instrument())
+
+        assert status == OrderStatus.FILLED
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_cancelled(self, event_bus: EventBus) -> None:
+        """get_order_status should return CANCELLED for 'Cancelled' status."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_order.return_value = _make_mock_placed_order("Cancelled")
+
+        status = await adapter.get_order_status("77", _make_equity_instrument())
+
+        assert status == OrderStatus.CANCELLED
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_rejected(self, event_bus: EventBus) -> None:
+        """get_order_status should return REJECTED for 'Rejected' status."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_order.return_value = _make_mock_placed_order("Rejected")
+
+        status = await adapter.get_order_status("88", _make_equity_instrument())
+
+        assert status == OrderStatus.REJECTED
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_unknown(self, event_bus: EventBus) -> None:
+        """get_order_status should return PENDING for unknown statuses."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_order.return_value = _make_mock_placed_order("SomeNewStatus")
+
+        status = await adapter.get_order_status("55", _make_equity_instrument())
+
+        assert status == OrderStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_no_status_attr(self, event_bus: EventBus) -> None:
+        """get_order_status should return PENDING if order has no status."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        placed_order = MagicMock(spec=[])  # No attributes at all
+        mock_account.get_order.return_value = placed_order
+
+        status = await adapter.get_order_status("66", _make_equity_instrument())
+
+        assert status == OrderStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_not_connected_raises(
+        self, event_bus: EventBus
+    ) -> None:
+        """get_order_status should raise VenueError when not connected."""
+        adapter = TastytradeAdapter(
+            bus=event_bus, login="user", password="pass"
+        )
+        with pytest.raises(VenueError, match="Not connected"):
+            await adapter.get_order_status("42", _make_equity_instrument())
+
+    @pytest.mark.asyncio
+    async def test_get_order_status_api_error(self, event_bus: EventBus) -> None:
+        """get_order_status should wrap API errors via _wrap_tt_error."""
+        adapter, _, mock_account = _setup_connected_adapter(event_bus)
+        mock_account.get_order.side_effect = RuntimeError("Not found")
+
+        with pytest.raises(VenueError, match="Not found"):
+            await adapter.get_order_status("42", _make_equity_instrument())
