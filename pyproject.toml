@@ -20,6 +20,7 @@ dependencies = [
 arctic = ["arcticdb>=6.0"]
 ccxt = ["ccxt>=4.0"]
 ibkr = ["ib_async>=1.0"]
+tastytrade = ["tastytrade>=10.0"]
 
 [dependency-groups]
 dev = [
@@ -31,6 +32,7 @@ dev = [
     "mypy>=1.13",
     "ccxt>=4.0",
     "ib_async>=1.0",
+    "tastytrade>=10.0",
 ]
 
 [build-system]
