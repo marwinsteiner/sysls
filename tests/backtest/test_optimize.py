@@ -7,6 +7,9 @@ time-series cross-validation splits, and walk-forward analysis.
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+from sysls.backtest.metrics import BacktestResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -122,20 +125,100 @@ class TestParameterGrid:
 class TestPydanticModels:
     """Tests for GridSearchResult, WalkForwardSplit, WalkForwardResult."""
 
+    @staticmethod
+    def _make_backtest_result() -> BacktestResult:
+        """Create a minimal BacktestResult for model tests."""
+        return BacktestResult(
+            equity_curve=[100_000.0, 101_000.0, 102_000.0],
+            returns=[0.01, 0.0099],
+            trades=[],
+            total_return=0.02,
+            sharpe_ratio=1.5,
+            sortino_ratio=2.0,
+            max_drawdown=0.01,
+            calmar_ratio=2.0,
+            annualized_return=0.15,
+            annualized_volatility=0.10,
+            win_rate=0.0,
+            profit_factor=0.0,
+            total_trades=0,
+            initial_capital=100_000.0,
+            final_equity=102_000.0,
+        )
+
     def test_grid_search_result_construction(self) -> None:
         """GridSearchResult can be constructed with valid data."""
+        from sysls.backtest.optimize import GridSearchResult
+
+        br = self._make_backtest_result()
+        gsr = GridSearchResult(
+            best_params={"fast": 2},
+            best_score=1.5,
+            all_results=[({"fast": 2}, br)],
+        )
+        assert gsr.best_params == {"fast": 2}
+        assert gsr.best_score == 1.5
+        assert len(gsr.all_results) == 1
 
     def test_grid_search_result_frozen(self) -> None:
         """GridSearchResult is immutable."""
+        from sysls.backtest.optimize import GridSearchResult
+
+        br = self._make_backtest_result()
+        gsr = GridSearchResult(
+            best_params={"fast": 2},
+            best_score=1.5,
+            all_results=[({"fast": 2}, br)],
+        )
+        with pytest.raises(Exception):  # noqa: B017
+            gsr.best_score = 2.0  # type: ignore[misc]
 
     def test_walk_forward_split_construction(self) -> None:
         """WalkForwardSplit can be constructed with valid data."""
+        from sysls.backtest.optimize import WalkForwardSplit
+
+        br = self._make_backtest_result()
+        wfs = WalkForwardSplit(
+            split_index=0,
+            train_start=0,
+            train_end=70,
+            oos_start=70,
+            oos_end=100,
+            best_params={"threshold": 0.01},
+            oos_result=br,
+        )
+        assert wfs.split_index == 0
+        assert wfs.train_end == 70
+        assert wfs.oos_start == 70
 
     def test_walk_forward_result_construction(self) -> None:
         """WalkForwardResult can be constructed with valid data."""
+        from sysls.backtest.optimize import WalkForwardResult
+
+        br = self._make_backtest_result()
+        wfr = WalkForwardResult(
+            splits=[],
+            combined_oos_equity=[100_000.0, 101_000.0],
+            combined_metrics=br,
+        )
+        assert len(wfr.splits) == 0
+        assert len(wfr.combined_oos_equity) == 2
 
     def test_serialization_round_trip(self) -> None:
         """Models survive JSON serialization round-trip."""
+        from sysls.backtest.optimize import GridSearchResult
+
+        br = self._make_backtest_result()
+        gsr = GridSearchResult(
+            best_params={"fast": 2, "slow": 5},
+            best_score=1.5,
+            all_results=[({"fast": 2, "slow": 5}, br)],
+        )
+        json_str = gsr.model_dump_json()
+        reconstructed = GridSearchResult.model_validate_json(json_str)
+        assert reconstructed.best_params == gsr.best_params
+        assert reconstructed.best_score == gsr.best_score
+        assert len(reconstructed.all_results) == len(gsr.all_results)
 
 
 # ---------------------------------------------------------------------------
