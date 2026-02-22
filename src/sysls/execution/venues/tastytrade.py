@@ -91,13 +91,70 @@ class TastytradeAdapter(VenueAdapter):
         """Connect to tastytrade API.
 
         Creates a session using the tastytrade SDK and retrieves the
-        specified account (or first available).
+        specified account (or first available). Uses ProductionSession
+        for live trading or CertificationSession for sandbox/test.
 
         Raises:
             SyslsConnectionError: If the tastytrade SDK is not installed,
                 authentication fails, or no accounts are found.
         """
-        raise NotImplementedError
+        try:
+            from tastytrade import Account, ProductionSession
+            from tastytrade import CertificationSession
+        except ImportError as exc:
+            raise SyslsConnectionError(
+                "tastytrade is not installed. "
+                "Install it with: pip install 'sysls[tastytrade]'",
+                venue=self.name,
+            ) from exc
+
+        try:
+            if self._is_test:
+                session = CertificationSession(self._login, self._password)
+            else:
+                session = ProductionSession(self._login, self._password)
+        except Exception as exc:
+            raise SyslsConnectionError(
+                f"Failed to authenticate with tastytrade: {exc}",
+                venue=self.name,
+            ) from exc
+
+        try:
+            accounts = Account.get_accounts(session)
+        except Exception as exc:
+            raise SyslsConnectionError(
+                f"Failed to retrieve accounts: {exc}",
+                venue=self.name,
+            ) from exc
+
+        if not accounts:
+            raise SyslsConnectionError(
+                "No accounts found for this login.",
+                venue=self.name,
+            )
+
+        if self._account_number:
+            matched = [
+                a for a in accounts
+                if getattr(a, "account_number", None) == self._account_number
+            ]
+            if not matched:
+                raise SyslsConnectionError(
+                    f"Account {self._account_number} not found. "
+                    f"Available: {[getattr(a, 'account_number', '?') for a in accounts]}",
+                    venue=self.name,
+                )
+            account = matched[0]
+        else:
+            account = accounts[0]
+
+        self._session = session
+        self._account = account
+        self._logger.info(
+            "tastytrade_connected",
+            is_test=self._is_test,
+            account=getattr(account, "account_number", "unknown"),
+        )
 
     async def disconnect(self) -> None:
         """Disconnect from tastytrade API.
@@ -105,7 +162,14 @@ class TastytradeAdapter(VenueAdapter):
         Destroys the session and clears internal state. Safe to call
         multiple times.
         """
-        raise NotImplementedError
+        if self._session is not None:
+            try:
+                self._session.destroy()
+            except Exception:
+                pass  # Best-effort cleanup
+            self._session = None
+            self._account = None
+            self._logger.info("tastytrade_disconnected")
 
     # -- Properties --------------------------------------------------------
 
